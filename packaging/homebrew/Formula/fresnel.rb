@@ -25,10 +25,11 @@ class Fresnel < Formula
 
   test do
     assert_match "Fresnel 0.5.0", shell_output("#{bin}/fresnel --version")
-    dashboard = pipe_output(
-      "#{bin}/fresnel-ui dashboard",
-      '{"healthy":true,"worker":"idle","chip":"Apple Silicon","memory_free_percent":50,"profile":"balanced","personalization":false,"runs":[]}',
-    )
+    dashboard_input = <<~JSON
+      {"healthy":true,"worker":"idle","chip":"Apple Silicon","memory_free_percent":50,
+       "profile":"balanced","personalization":false,"runs":[]}
+    JSON
+    dashboard = pipe_output("#{bin}/fresnel-ui dashboard", dashboard_input)
     assert_match "FRESNEL", dashboard
     assert_match '"ok":true', shell_output("#{bin}/fresnel-supervisor --self-test")
   end
