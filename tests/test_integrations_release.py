@@ -6,11 +6,13 @@ from fresnel.store import Store
 
 
 def test_generic_and_cursor_integrations(tmp_path):
-    integrations.install("generic", tmp_path)
+    store = Store(tmp_path / "state.sqlite3")
+    integrations.install("generic", tmp_path, store=store)
     assert (tmp_path / "FRESNEL.md").is_file()
-    assert integrations.uninstall("generic", tmp_path)
-    integrations.install("cursor", tmp_path)
+    assert integrations.uninstall("generic", tmp_path, store=store)
+    integrations.install("cursor", tmp_path, store=store)
     assert (tmp_path / ".cursor/rules/fresnel.mdc").is_file()
+    store.close()
 
 
 def test_codex_skill_source_and_dry_run(tmp_path, monkeypatch):
