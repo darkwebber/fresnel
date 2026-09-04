@@ -274,7 +274,12 @@ def install_service(config: Config, *, dry_run: bool = False) -> Path:
     if not dry_run:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_launch_agent(config))
-        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(path)], check=False)
+        subprocess.run(
+            ["launchctl", "bootout", f"gui/{os.getuid()}", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
         subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], check=True)
     return path
 
