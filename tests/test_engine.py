@@ -57,7 +57,7 @@ def test_engine_validates_without_applying(tmp_path, monkeypatch):
         store=store,
         coordinator_calls=[{"usage": {"prompt_tokens": 1000, "completion_tokens": 100}}],
     )
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert result["applied"] is False
     assert not (tmp_path / "app.py").exists()
     assert result["metrics"]["estimated_coordinator_cost_usd"] == 0.0012
@@ -69,7 +69,7 @@ def test_engine_applies_after_quality_gates(tmp_path, monkeypatch):
     monkeypatch.setattr("fresnel.engine.call_worker", fake_worker)
     store = Store(tmp_path / "state.db")
     result = run(tmp_path, plan(), Config(), store=store, apply=True)
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert result["applied"] is True
     assert (tmp_path / "app.py").read_text().startswith("def add")
     assert (tmp_path / "test_contract.py").is_file()
@@ -122,6 +122,6 @@ def test_operation_error_is_repaired_within_attempt_budget(tmp_path, monkeypatch
     }
     store = Store(tmp_path / "repair.db")
     result = run(tmp_path, parse_plan(raw), Config(), store=store)
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert len(result["components"][0]["attempts"]) == 2
     store.close()
