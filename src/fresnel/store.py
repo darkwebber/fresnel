@@ -108,6 +108,45 @@ CREATE INDEX IF NOT EXISTS repository_symbols_name_idx ON repository_symbols(pro
 CREATE VIRTUAL TABLE IF NOT EXISTS repository_fts USING fts5(
   project_id UNINDEXED, path UNINDEXED, content
 );
+CREATE TABLE IF NOT EXISTS workspaces (
+  run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root TEXT NOT NULL,
+  source_root TEXT NOT NULL, source_hashes_json TEXT NOT NULL, plan_json TEXT NOT NULL,
+  state TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL, expires_at REAL
+);
+CREATE TABLE IF NOT EXISTS checkpoints (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, component_id TEXT, sequence INTEGER NOT NULL,
+  state_json TEXT NOT NULL, hashes_json TEXT NOT NULL, report_json TEXT NOT NULL,
+  created_at REAL NOT NULL, UNIQUE(run_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS idempotency_records (
+  key TEXT PRIMARY KEY, run_id TEXT NOT NULL, kind TEXT NOT NULL, request_json TEXT NOT NULL,
+  result_json TEXT, state TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS capability_calls (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, component_id TEXT NOT NULL,
+  capability TEXT NOT NULL, intent TEXT NOT NULL, request_json TEXT NOT NULL,
+  result_json TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS context_manifests (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, component_id TEXT NOT NULL, attempt INTEGER NOT NULL,
+  budget_tokens INTEGER NOT NULL, used_tokens INTEGER NOT NULL, items_json TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS context_feedback (
+  manifest_id TEXT PRIMARY KEY, usefulness REAL NOT NULL, outcome TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_settings (
+  key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS fact_observations (
+  id TEXT PRIMARY KEY, fact_key TEXT NOT NULL, project_id TEXT, run_id TEXT,
+  value_json TEXT NOT NULL, source TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS fact_observations_key_idx ON fact_observations(fact_key, created_at);
+CREATE TABLE IF NOT EXISTS run_control (
+  run_id TEXT PRIMARY KEY, cancelled INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL
+);
 """
 
 
@@ -117,9 +156,27 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.path)
         self.connection.row_factory = sqlite3.Row
+        previous_version = None
+        has_meta = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'"
+        ).fetchone()
+        if has_meta:
+            row = self.connection.execute(
+                "SELECT value FROM schema_meta WHERE key='memory_schema'"
+            ).fetchone()
+            previous_version = row["value"] if row else None
+        if previous_version and previous_version != "2":
+            backup_path = self.path.with_name(
+                f"{self.path.name}.backup-v{previous_version}-{int(time.time())}"
+            )
+            backup = sqlite3.connect(backup_path)
+            try:
+                self.connection.backup(backup)
+            finally:
+                backup.close()
         self.connection.executescript(SCHEMA)
         self.connection.execute(
-            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('memory_schema', '1')"
+            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('memory_schema', '2')"
         )
         self.connection.commit()
 
@@ -149,6 +206,13 @@ class Store:
         )
         self.connection.commit()
 
+    def progress_event(self, run_id: str, payload: dict[str, Any]) -> None:
+        self.connection.execute(
+            "INSERT INTO events(run_id, created_at, kind, payload_json) VALUES (?, ?, 'PROGRESS', ?)",
+            (run_id, time.time(), json.dumps(payload)),
+        )
+        self.connection.commit()
+
     def finish(self, run_id: str, status: str, result: dict[str, Any]) -> None:
         self.connection.execute(
             "UPDATE runs SET status=?, updated_at=?, result_json=? WHERE id=?",
@@ -162,6 +226,90 @@ class Store:
             (limit,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def run(self, run_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["result"] = json.loads(result.pop("result_json")) if result["result_json"] else None
+        return result
+
+    def cancel(self, run_id: str) -> bool:
+        run = self.run(run_id)
+        if not run:
+            return False
+        if run["status"] in {
+            "READY_TO_APPLY",
+            "APPLIED",
+            "COMPONENT_FAILED",
+            "FAILED",
+            "CANCELLED",
+        }:
+            return False
+        now = time.time()
+        self.connection.execute(
+            "INSERT INTO run_control(run_id, cancelled, updated_at) VALUES (?, 1, ?) "
+            "ON CONFLICT(run_id) DO UPDATE SET cancelled=1, updated_at=excluded.updated_at",
+            (run_id, now),
+        )
+        self.connection.execute(
+            "UPDATE runs SET status='CANCEL_REQUESTED', updated_at=? WHERE id=?", (now, run_id)
+        )
+        self.connection.commit()
+        return True
+
+    def cancelled(self, run_id: str) -> bool:
+        row = self.connection.execute(
+            "SELECT cancelled FROM run_control WHERE run_id=?", (run_id,)
+        ).fetchone()
+        return bool(row and row["cancelled"])
+
+    def clear_cancel(self, run_id: str) -> None:
+        self.connection.execute(
+            "UPDATE run_control SET cancelled=0, updated_at=? WHERE run_id=?",
+            (time.time(), run_id),
+        )
+        self.connection.commit()
+
+    def idempotency_result(self, key: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT state, result_json FROM idempotency_records WHERE key=?", (key,)
+        ).fetchone()
+        if not row or row["state"] != "COMPLETED":
+            return None
+        return json.loads(row["result_json"] or "{}")
+
+    def idempotency_state(self, key: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT state FROM idempotency_records WHERE key=?", (key,)
+        ).fetchone()
+        return str(row["state"]) if row else None
+
+    def idempotency_start(
+        self, key: str, run_id: str, kind: str, request: dict[str, Any]
+    ) -> None:
+        now = time.time()
+        self.connection.execute(
+            "INSERT OR IGNORE INTO idempotency_records VALUES (?, ?, ?, ?, NULL, 'STARTED', ?, ?)",
+            (key, run_id, kind, json.dumps(request, sort_keys=True), now, now),
+        )
+        self.connection.commit()
+
+    def idempotency_finish(self, key: str, result: dict[str, Any]) -> None:
+        self.connection.execute(
+            "UPDATE idempotency_records SET state='COMPLETED', result_json=?, updated_at=? "
+            "WHERE key=?",
+            (json.dumps(result), time.time(), key),
+        )
+        self.connection.commit()
+
+    def context_feedback(self, manifest_id: str, usefulness: float, outcome: str) -> None:
+        self.connection.execute(
+            "INSERT OR REPLACE INTO context_feedback VALUES (?, ?, ?, ?)",
+            (manifest_id, usefulness, outcome, time.time()),
+        )
+        self.connection.commit()
 
     def repeated_failures(self, minimum: int = 3) -> list[dict[str, Any]]:
         rows = self.connection.execute(

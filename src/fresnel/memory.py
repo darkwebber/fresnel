@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import blobs_dir
+from .protocol import safe_path
 from .store import Store
 
 RAW_RETENTION_SECONDS = 30 * 24 * 60 * 60
@@ -250,7 +251,7 @@ class Memory:
         protected_text += "\n" + "\n".join(
             row["evidence_json"]
             for row in self.store.connection.execute(
-                "SELECT evidence_json FROM playbooks WHERE status='PROMOTED'"
+                "SELECT evidence_json FROM playbooks WHERE status='ACTIVE'"
             ).fetchall()
         )
         rows = [row for row in rows if row["id"] not in protected_text]
@@ -288,7 +289,183 @@ class Memory:
             "blobs": blobs["count"],
             "blob_bytes": blobs["bytes"],
             "retention_days": 30,
+            "personalization_enabled": self.personalization_enabled(),
         }
+
+    def personalization_enabled(self) -> bool:
+        row = self.store.connection.execute(
+            "SELECT value_json FROM user_settings WHERE key='personalization_enabled'"
+        ).fetchone()
+        return bool(json.loads(row["value_json"])) if row else False
+
+    def set_personalization(self, enabled: bool) -> None:
+        self.store.connection.execute(
+            "INSERT INTO user_settings VALUES ('personalization_enabled', ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+            (json.dumps(bool(enabled)), time.time()),
+        )
+        self.store.connection.commit()
+
+    def remember(
+        self,
+        key: str,
+        value: Any,
+        *,
+        repo: Path | None = None,
+        source: str = "user-explicit",
+        confidence: float = 1.0,
+        inferred: bool = False,
+        run_id: str | None = None,
+    ) -> str:
+        if not key or any(char in key for char in "\r\n\0"):
+            raise ValueError("memory key must be non-empty and single-line")
+        serialized = json.dumps(value, sort_keys=True)
+        if SECRET_RE.search(f"{key}={serialized}"):
+            raise ValueError("secrets and credentials cannot be stored as memory facts")
+        if inferred and not self.personalization_enabled():
+            raise PermissionError("inferred personalization is not enabled")
+        identifier, _root = self.ensure_project(repo) if repo else (None, None)
+        current = self.store.connection.execute(
+            "SELECT id FROM memory_facts WHERE kind=? AND project_id IS ? AND valid=1 "
+            "ORDER BY created_at DESC LIMIT 1",
+            (key, identifier),
+        ).fetchone()
+        fact_id = uuid.uuid4().hex
+        source_hash = hashlib.sha256(serialized.encode()).hexdigest()
+        if repo and source.startswith("file:"):
+            source_path = safe_path(repo.resolve(), source.removeprefix("file:"))
+            if not source_path.is_file():
+                raise ValueError(f"fact source is missing: {source_path}")
+            source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        payload = {
+            "key": key,
+            "value": value,
+            "scope": "project" if identifier else "user",
+            "explicit": not inferred,
+            "sensitivity": "non-sensitive",
+            "fresh_at": time.time(),
+        }
+        with self.store.connection:
+            if current:
+                self.store.connection.execute(
+                    "UPDATE memory_facts SET valid=0 WHERE id=?", (current["id"],)
+                )
+            self.store.connection.execute(
+                "INSERT INTO memory_facts VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                (
+                    fact_id,
+                    identifier,
+                    run_id,
+                    key,
+                    json.dumps(payload),
+                    source,
+                    source_hash,
+                    max(0.0, min(1.0, confidence)),
+                    current["id"] if current else None,
+                    time.time(),
+                ),
+            )
+        return fact_id
+
+    def observe(
+        self, key: str, value: Any, *, run_id: str, repo: Path | None = None, source: str
+    ) -> str | None:
+        """Record an inference and promote it after three matches across two runs."""
+        if SECRET_RE.search(f"{key}={json.dumps(value)}"):
+            return None
+        if not self.personalization_enabled():
+            return None
+        identifier, _root = self.ensure_project(repo) if repo else (None, None)
+        observation_id = uuid.uuid4().hex
+        self.store.connection.execute(
+            "INSERT INTO fact_observations VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                observation_id,
+                key,
+                identifier,
+                run_id,
+                json.dumps(value, sort_keys=True),
+                source,
+                time.time(),
+            ),
+        )
+        self.store.connection.commit()
+        row = self.store.connection.execute(
+            "SELECT COUNT(*) AS observations, COUNT(DISTINCT run_id) AS runs "
+            "FROM fact_observations WHERE fact_key=? AND project_id IS ? AND value_json=?",
+            (key, identifier, json.dumps(value, sort_keys=True)),
+        ).fetchone()
+        if row["observations"] >= 3 and row["runs"] >= 2:
+            return self.remember(
+                key,
+                value,
+                repo=repo,
+                source="repeated-observation",
+                confidence=min(0.95, 0.6 + row["observations"] * 0.05),
+                inferred=True,
+                run_id=run_id,
+            )
+        return None
+
+    def profile(self, repo: Path | None = None) -> list[dict[str, Any]]:
+        identifier, _root = self.ensure_project(repo) if repo else (None, None)
+        if repo and identifier:
+            rows = self.store.connection.execute(
+                "SELECT id, source, source_hash FROM memory_facts "
+                "WHERE project_id=? AND valid=1 AND source LIKE 'file:%'",
+                (identifier,),
+            ).fetchall()
+            stale = []
+            for row in rows:
+                path = safe_path(repo.resolve(), row["source"].removeprefix("file:"))
+                current = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+                if current != row["source_hash"]:
+                    stale.append((row["id"],))
+            if stale:
+                self.store.connection.executemany(
+                    "UPDATE memory_facts SET valid=0 WHERE id=?", stale
+                )
+                self.store.connection.commit()
+        if identifier:
+            rows = self.store.connection.execute(
+                "SELECT * FROM memory_facts WHERE valid=1 AND (project_id=? OR project_id IS NULL) "
+                "ORDER BY project_id IS NULL, created_at DESC",
+                (identifier,),
+            ).fetchall()
+        else:
+            rows = self.store.connection.execute(
+                "SELECT * FROM memory_facts WHERE valid=1 AND project_id IS NULL ORDER BY created_at DESC"
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["value"] = json.loads(item.pop("value_json"))
+            result.append(item)
+        return result
+
+    def explain_fact(self, fact_id: str) -> dict[str, Any]:
+        row = self.store.connection.execute(
+            "SELECT * FROM memory_facts WHERE id=?", (fact_id,)
+        ).fetchone()
+        if not row:
+            raise KeyError(fact_id)
+        result = dict(row)
+        result["value"] = json.loads(result.pop("value_json"))
+        result["observations"] = [
+            dict(item)
+            for item in self.store.connection.execute(
+                "SELECT * FROM fact_observations WHERE fact_key=? ORDER BY created_at",
+                (result["kind"],),
+            ).fetchall()
+        ]
+        return result
+
+    def forget_fact(self, fact_id: str) -> bool:
+        cursor = self.store.connection.execute(
+            "UPDATE memory_facts SET valid=0 WHERE id=?", (fact_id,)
+        )
+        self.store.connection.commit()
+        return cursor.rowcount == 1
 
     def inspect(self, *, run_id: str | None = None, session_id: str | None = None) -> dict:
         state = None

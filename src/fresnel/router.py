@@ -27,7 +27,7 @@ SPARK = ModelProfile(
 
 def shadow_route(task: dict, registry: tuple[ModelProfile, ...] = (SPARK,)) -> dict:
     selected = registry[0]
-    reasons = ["Spark is the only enabled worker in Fresnel v0.1"]
+    reasons = ["Spark is the only production worker; alternative routing is shadow-only"]
     if len(task.get("targets", [])) > selected.preferred_files:
         reasons.append("task exceeds Spark's preferred file count; coordinator should decompose it")
     if task.get("api_uncertainty"):

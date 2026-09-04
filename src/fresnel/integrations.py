@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import PROTOCOL_VERSION, __version__
+from .protocol import contract_schema
 from .store import Store
 
 CONTRACT_VERSION = __version__
@@ -24,13 +25,14 @@ def contract_data() -> dict[str, Any]:
         "fresnel_version": __version__,
         "contract_version": CONTRACT_VERSION,
         "protocol_version": PROTOCOL_VERSION,
+        "schema": contract_schema(),
         "role": "The external orchestrator is the architect, taste-maker, approval controller, and final reviewer; Spark is a bounded implementation worker.",
         "workflow": [
             "Inspect the repository and convert the user goal into an ordered protocol plan.",
             "Keep architecture, algorithms, interfaces, contracts, acceptance criteria, and integration tests under orchestrator control.",
             "Delegate only narrow components with explicit targets, context, implementation details, and validation commands.",
             "Resolve local documentation first and use domain-restricted Exa only when the plan authorizes web research.",
-            "Run Fresnel in its disposable workspace, inspect validation evidence and diff, and apply only after semantic review.",
+            "Run Fresnel in its durable workspace, inspect validation evidence and diff, and apply only after semantic review.",
             "Surface AWAITING_APPROVAL to the user; never infer approval for destructive or externally visible actions.",
             "Use Fresnel memory replay after interruption and report quality, token, latency, cache, and retry metrics.",
             "Relay MCP progress notifications or CLI JSON progress to the user, including phase, component, attempt, completed/total, ETA, retries, and validation state.",
@@ -43,9 +45,19 @@ def contract_data() -> dict[str, Any]:
             "apply": "fresnel run --repo REPO --plan PLAN.json --apply",
             "contract": "fresnel contract --format json",
             "memory": "fresnel memory inspect --run RUN_ID",
+            "resume": "fresnel run --resume RUN_ID",
+            "follow": "fresnel status --run RUN_ID --follow",
+            "cancel": "fresnel cancel RUN_ID",
+            "capabilities": "fresnel capabilities INTENT",
         },
         "worker_contract": {
-            "allowed": ["EDIT", "CREATE", "NEEDS_REFERENCE", "REQUEST_ACTION"],
+            "allowed": [
+                "EDIT",
+                "CREATE",
+                "NEEDS_CAPABILITY",
+                "NEEDS_REFERENCE",
+                "REQUEST_ACTION",
+            ],
             "never": [
                 "redesign architecture",
                 "edit undeclared targets",
@@ -79,7 +91,7 @@ Create small components with stable IDs and only earlier dependencies. Every com
 declare repository-relative targets, optional read-only context, constraints, acceptance checks,
 required implementation details, validation argv arrays, and authorized references. Prefer MCP
 tools when available; the CLI is the portable contract. A local worker response is untrusted until
-Fresnel has parsed it, applied it in a disposable workspace, and passed component and integration
+Fresnel has parsed it, applied it in a durable workspace, and passed component and integration
 validation. The orchestrator must still review the complete diff for semantic correctness.
 
 Never let Spark:

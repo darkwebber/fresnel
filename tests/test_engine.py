@@ -86,7 +86,8 @@ def test_macos_validation_is_sandboxed(tmp_path, monkeypatch):
     )
     command = _sandboxed_command(tmp_path, ("python3", "test.py"))
     assert command[:2] == ["/usr/bin/sandbox-exec", "-p"]
-    assert "deny default" in command[2]
+    assert "deny network" in command[2]
+    assert "deny file-write" in command[2]
     assert command[-2:] == ["python3", "test.py"]
 
 

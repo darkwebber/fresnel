@@ -22,6 +22,7 @@ CREATE_RE = re.compile(
 )
 REFERENCE_RE = re.compile(r"<<<NEEDS_REFERENCE>>>\s*(\{.*?\})\s*<<<END>>>", re.DOTALL)
 ACTION_RE = re.compile(r"<<<REQUEST_ACTION>>>\s*(\{.*?\})\s*<<<END>>>", re.DOTALL)
+CAPABILITY_RE = re.compile(r"<<<NEEDS_CAPABILITY>>>\s*(\{.*?\})\s*<<<END>>>", re.DOTALL)
 LOOSE_REPLACE_RE = re.compile(
     r"<{2,3}REQUEST_ACTION>{2,3}\s*(?:<<<)?SEARCH(?:>>>)?\s*\n(?P<search>.*?)\n"
     r"(?:<<<)?REPLACE(?:>>>)?\s*\n(?P<replace>.*?)\n(?:<<<)?END(?:>>>)?(?:\s*<<<)?",
@@ -93,7 +94,10 @@ def render_prompt(
         blocks.append(
             f'FILE "{relative}" ({description})\n<<<CONTENT>>>\n{content}\n<<<END_CONTENT>>>'
         )
-    return f"""You are Spark 2.5, a bounded coding worker. Execute the supplied design; do not redesign it.
+    return f"""You are Spark, a bounded execution worker. Execute this component; do not redesign it.
+Inspect supplied evidence before editing. Modify declared targets only. Validate observable behavior.
+If a fact or safe execution ability is missing, request it with NEEDS_CAPABILITY. Never access secrets,
+undeclared paths, or external systems directly. Return structured operations or one blocker request only.
 
 ATTEMPT: {attempt}
 OUTPUT BUDGET: {response_budget or '[profile default]'} tokens. Use the smallest complete edit.
@@ -122,9 +126,11 @@ Missing target files use:
 complete content
 <<<END>>>
 
-If an API fact is missing, return one JSON request between NEEDS_REFERENCE and END markers.
-If file content was omitted, request only the needed range:
-<<<NEEDS_REFERENCE>>>{{"kind":"file_excerpt","path":"relative.py","start_line":1,"end_line":200}}<<<END>>>
+If information or execution is missing, request it by intent without guessing which tool exists:
+<<<NEEDS_CAPABILITY>>>{{"capability":"discover","intent":"what must be learned or checked"}}<<<END>>>
+For an omitted file range you may directly request:
+<<<NEEDS_CAPABILITY>>>{{"capability":"file_excerpt","intent":"inspect definition","path":"relative.py","start_line":1,"end_line":200}}<<<END>>>
+Legacy protocol 1.0 also accepts {{"kind":"file_excerpt"}} in NEEDS_REFERENCE markers.
 For any other required action, return one JSON request between REQUEST_ACTION and END markers.
 Do not include prose or Markdown fences. Never sacrifice a closing END marker. Prefer a small
 SEARCH/REPLACE over recreating a whole existing file."""
@@ -190,7 +196,11 @@ def call(
 
 def parse(text: str, fallback_target: str | None = None) -> tuple[str, Any]:
     stripped = text.strip()
-    for kind, pattern in (("reference", REFERENCE_RE), ("action", ACTION_RE)):
+    for kind, pattern in (
+        ("capability", CAPABILITY_RE),
+        ("reference", REFERENCE_RE),
+        ("action", ACTION_RE),
+    ):
         match = pattern.fullmatch(stripped)
         if match:
             return kind, json.loads(match.group(1))
@@ -287,6 +297,7 @@ def apply_operations(
     replacement_size_limit: int = 64 * 1024,
 ) -> list[str]:
     changed = set()
+    rendered: dict[Path, str] = {}
     for operation in operations:
         relative = operation["path"]
         if relative not in targets:
@@ -296,11 +307,10 @@ def apply_operations(
             if path.exists():
                 if not replace_existing_create or path.stat().st_size > replacement_size_limit:
                     raise ValueError(f"CREATE target exists: {relative}")
-                path.write_text(operation["content"])
+                rendered[path] = operation["content"]
                 changed.add(relative)
                 continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(operation["content"])
+            rendered[path] = operation["content"]
         else:
             if not path.is_file():
                 raise ValueError(f"EDIT target is missing: {relative}")
@@ -308,6 +318,31 @@ def apply_operations(
             search = operation["search"]
             if content.count(search) != 1:
                 raise ValueError(f"SEARCH must match exactly once in {relative}")
-            path.write_text(content.replace(search, operation["replace"], 1))
+            rendered[path] = content.replace(search, operation["replace"], 1)
         changed.add(relative)
+    for path, content in rendered.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.fresnel-tmp")
+        temporary.write_text(content)
+        temporary.replace(path)
     return sorted(changed)
+
+
+def operations_already_applied(
+    root: Path, targets: set[str], operations: list[dict[str, str]]
+) -> bool:
+    """Recognize an edit completed before its idempotency record was finalized."""
+    for operation in operations:
+        relative = operation["path"]
+        if relative not in targets:
+            return False
+        path = safe_path(root, relative)
+        if not path.is_file():
+            return False
+        content = path.read_text()
+        if operation["kind"] == "create":
+            if content != operation["content"]:
+                return False
+        elif operation["search"] in content or operation["replace"] not in content:
+            return False
+    return True

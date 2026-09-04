@@ -195,6 +195,39 @@ def test_transient_stream_failure_resets_ephemeral_draft_and_retries(monkeypatch
     assert result["content"] == "clean"
 
 
+def test_stream_segments_are_durable_before_transport_finishes(tmp_path):
+    memory = Memory(Store(tmp_path / "state.sqlite3"))
+
+    def interrupted(_endpoint, _question, on_text, **_kwargs):
+        on_text("durable partial")
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        generate_response(
+            "http://local",
+            "question",
+            profile=Profile(max_output_tokens=64, max_input_tokens=1024),
+            requested_tokens=32,
+            max_continuations=0,
+            max_total_tokens=32,
+            temperature=0.15,
+            top_p=0.9,
+            top_k=40,
+            min_p=0,
+            system="system",
+            streaming=True,
+            memory=memory,
+            session_name="crash-safe",
+            repo=tmp_path,
+            stream_fn=interrupted,
+        )
+    session = memory.session_by_name("crash-safe", repo=tmp_path)
+    partial = memory.interrupted_turn(session["id"])
+    assert partial["content"] == "durable partial"
+    assert session["status"] == "INTERRUPTED"
+    memory.close()
+
+
 def test_no_progress_on_broken_markdown_switches_to_complete_replacement():
     conversations = []
     replies = iter(

@@ -15,6 +15,11 @@ MODEL_REPO = "abenzerps/Spark-X2.5-4B-MLX-8bit"
 MODEL_REVISION = "92537e99b1c494443ad8e5eea93a2d45f4622a13"
 RUNTIME_REPO = "https://github.com/XHToken/Spark-MLX-LLM.git"
 RUNTIME_REVISION = "de2b4379fa1e2f2e1f99d84c83f0e008f651d86c"
+RUNTIME_WHEEL_URL = (
+    "https://github.com/darkwebber/fresnel/releases/download/v0.5.0/"
+    "spark_mlx_llm-0.1.0-py3-none-any.whl"
+)
+RUNTIME_WHEEL_SHA256 = "fb6e458bf147f04ba1f8bec8907f921a400fd4f7e273bd5d24814a59878cf631"
 
 
 def application_support() -> Path:
@@ -45,6 +50,14 @@ def blobs_dir() -> Path:
     return memory_dir() / "blobs"
 
 
+def workspaces_dir() -> Path:
+    return application_support() / "workspaces"
+
+
+def run_dir() -> Path:
+    return application_support() / "run"
+
+
 def runtime_dir() -> Path:
     return application_support() / "runtime" / RUNTIME_REVISION
 
@@ -58,6 +71,8 @@ class Profile:
     safety_tokens: int = 1024
     prompt_cache_bytes: int = 2 * 1024**3
     max_attempts: int = 3
+    max_capability_calls: int = 8
+    component_timeout_seconds: int = 300
     temperature: float = 0.15
     top_p: float = 0.9
     top_k: int = 40
@@ -66,7 +81,7 @@ class Profile:
 
 @dataclass
 class Config:
-    protocol_version: str = "1.0"
+    protocol_version: str = "1.1"
     model_repo: str = MODEL_REPO
     model_revision: str = MODEL_REVISION
     model_path: str = ""
@@ -80,6 +95,9 @@ class Config:
     active_worker: str = "spark-2.5-4b-mlx-8bit"
     coordinator_input_cost_per_million: float = 0.0
     coordinator_output_cost_per_million: float = 0.0
+    personalization_enabled: bool = False
+    idle_seconds_ac: int = 600
+    idle_seconds_battery: int = 180
     profiles: dict[str, dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
@@ -106,6 +124,8 @@ def ensure_directories() -> None:
         logs_dir(),
         memory_dir(),
         blobs_dir(),
+        workspaces_dir(),
+        run_dir(),
         runtime_dir(),
     ):
         path.mkdir(parents=True, exist_ok=True)
