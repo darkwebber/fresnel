@@ -3,8 +3,8 @@ class Fresnel < Formula
 
   desc "Mac-native orchestration harness for bounded local coding agents"
   homepage "https://github.com/darkwebber/fresnel"
-  url "https://github.com/darkwebber/fresnel/releases/download/v0.1.2/fresnel_agent-0.1.2.tar.gz"
-  sha256 "b8f9a5bf972ba174ddf4c86be61830245919394cb4268c6fe20da25d8c6877ae"
+  url "https://github.com/darkwebber/fresnel/releases/download/v0.2.0/fresnel_agent-0.2.0.tar.gz"
+  sha256 "bd5ecf7693f87892fbf6db071e743df7edf1978e50fcae2dcfc6e92e948eb804"
   license "Apache-2.0"
 
   depends_on arch: :arm64
@@ -16,6 +16,6 @@ class Fresnel < Formula
   end
 
   test do
-    assert_match "Fresnel 0.1.2", shell_output("#{bin}/fresnel --version")
+    assert_match "Fresnel 0.2.0", shell_output("#{bin}/fresnel --version")
   end
 end

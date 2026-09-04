@@ -381,6 +381,10 @@ def run(
                             config.model_repo,
                             prompt,
                             profile.max_output_tokens,
+                            temperature=profile.temperature,
+                            top_p=profile.top_p,
+                            top_k=profile.top_k,
+                            min_p=profile.min_p,
                         )
                         elapsed = round(time.perf_counter() - started, 3)
                         attempt = {

@@ -25,3 +25,28 @@ def test_worker_call_detects_truncation(monkeypatch):
     monkeypatch.setattr(worker.urllib.request, "urlopen", lambda *_args, **_kwargs: Response(body))
     with pytest.raises(ValueError, match="truncated"):
         worker.call("http://local", "spark", "prompt", 10)
+
+
+def test_worker_call_sends_profile_sampling(monkeypatch):
+    captured = {}
+    body = {"choices": [{"message": {"content": "done"}, "finish_reason": "stop"}]}
+
+    def fake_open(request, **_kwargs):
+        captured.update(json.loads(request.data))
+        return Response(body)
+
+    monkeypatch.setattr(worker.urllib.request, "urlopen", fake_open)
+    worker.call(
+        "http://local",
+        "spark",
+        "prompt",
+        10,
+        temperature=0.25,
+        top_p=0.85,
+        top_k=32,
+        min_p=0.05,
+    )
+    assert captured["temperature"] == 0.25
+    assert captured["top_p"] == 0.85
+    assert captured["top_k"] == 32
+    assert captured["min_p"] == 0.05

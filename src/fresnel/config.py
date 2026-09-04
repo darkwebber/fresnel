@@ -46,6 +46,10 @@ class Profile:
     safety_tokens: int = 1024
     prompt_cache_bytes: int = 2 * 1024**3
     max_attempts: int = 3
+    temperature: float = 0.15
+    top_p: float = 0.9
+    top_k: int = 40
+    min_p: float = 0.0
 
 
 @dataclass
@@ -69,10 +73,17 @@ class Config:
     def __post_init__(self) -> None:
         if self.profiles is None:
             self.profiles = {"balanced": asdict(Profile())}
+        sampling_defaults = {"eco": 0.0, "balanced": 0.15, "maximum": 0.25}
+        for name, values in self.profiles.items():
+            values.setdefault("temperature", sampling_defaults.get(name, 0.15))
+            values.setdefault("top_p", 0.9)
+            values.setdefault("top_k", 40)
+            values.setdefault("min_p", 0.0)
 
     @property
     def selected_profile(self) -> Profile:
-        values = dict(self.profiles.get(self.profile, self.profiles["balanced"]))
+        selected = self.profiles.get(self.profile) or self.profiles.get("balanced")
+        values = dict(selected or asdict(Profile()))
         return Profile(**values)
 
 

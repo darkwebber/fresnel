@@ -23,6 +23,25 @@ Already ran setup and are wondering what comes next? Run:
 fresnel onboard
 ```
 
+## Ask and sampling
+
+Use the local model directly for a small one-off question:
+
+```bash
+fresnel ask "Write a PySpark expression that normalizes an email column"
+```
+
+Fresnel keeps hardware pressure measurements at temperature 0 so repeated
+calibrations are comparable. Normal worker calls use the sampling values in the
+active profile (`balanced` defaults to temperature 0.15). Tune behavior locally:
+
+```bash
+fresnel tune
+fresnel config sampling --temperature 0.25 --top-p 0.9 --top-k 40
+```
+
+Per-question overrides are available through `fresnel ask --help`.
+
 ## Development install
 
 ```bash

@@ -87,7 +87,8 @@ def run_onboarding(
     output(f"  {_paint('✓', '32', color)} Model      Spark-X2.5 4B MLX 8-bit")
     output(
         f"  {_paint('✓', '32', color)} Profile    {config.profile} · "
-        f"{profile.context_window:,} context · {profile.max_output_tokens:,} output"
+        f"{profile.context_window:,} context · {profile.max_output_tokens:,} output · "
+        f"temperature {profile.temperature:g}"
     )
     if status["problems"]:
         for problem in status["problems"]:

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import __version__
 from .benchmark import calibrate
+from .chat import complete
 from .config import config_path, environment_key, keychain_set, load_config, save_config
 from .engine import plan_request, run
 from .integrations import install as install_integration
@@ -22,6 +23,7 @@ from .progress import BenchmarkProgress
 from .protocol import parse_plan
 from .release import homebrew_formula
 from .router import shadow_route
+from .sampling import DEFAULT_CANDIDATES, tune
 from .setup import doctor, guided_setup, server_command, uninstall_setup
 from .store import Store
 
@@ -108,6 +110,93 @@ def cmd_benchmark(args) -> int:
             f"{selected['max_output_tokens']:,} output"
         )
         print("Inspect anytime with `fresnel doctor --json`.")
+    return 0
+
+
+def _sampling_value(value, fallback):
+    return fallback if value is None else value
+
+
+def cmd_ask(args) -> int:
+    question = " ".join(args.question).strip()
+    if not question:
+        question = sys.stdin.read().strip() if not sys.stdin.isatty() else input("Ask Spark: ").strip()
+    if not question:
+        raise ValueError("question cannot be empty")
+    config = load_config()
+    profile = config.selected_profile
+    temperature = _sampling_value(args.temperature, profile.temperature)
+    top_p = _sampling_value(args.top_p, profile.top_p)
+    top_k = _sampling_value(args.top_k, profile.top_k)
+    min_p = _sampling_value(args.min_p, profile.min_p)
+    max_tokens = args.max_tokens or min(2048, profile.max_output_tokens)
+    _validate_sampling(temperature, top_p, top_k, min_p)
+    if not 1 <= max_tokens <= profile.max_output_tokens:
+        raise ValueError(
+            f"max_tokens must be between 1 and the active profile limit "
+            f"({profile.max_output_tokens})"
+        )
+    endpoint = f"http://{config.host}:{config.port}/v1/chat/completions"
+    with BenchmarkProgress(enabled=sys.stderr.isatty() and not args.json) as progress:
+        progress({"state": "started", "label": "Spark is thinking"})
+        try:
+            result = complete(
+                endpoint,
+                question,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                system=args.system,
+            )
+        except Exception as exc:
+            progress(
+                {
+                    "state": "failed",
+                    "label": "Spark is thinking",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            raise
+        progress(
+            {
+                "state": "completed",
+                "label": "Spark answered",
+                "seconds": result["seconds"],
+                "cached_tokens": result["usage"]
+                .get("prompt_tokens_details", {})
+                .get("cached_tokens", 0),
+            }
+        )
+    if args.json:
+        emit({**result, "sampling": {"temperature": temperature, "top_p": top_p, "top_k": top_k, "min_p": min_p}})
+    else:
+        print(result["content"].rstrip())
+    return 0
+
+
+def cmd_tune(args) -> int:
+    config = load_config()
+    endpoint = f"http://{config.host}:{config.port}/v1/chat/completions"
+    candidates = tuple(args.candidate) if args.candidate else DEFAULT_CANDIDATES
+    if not candidates or any(value < 0 or value > 2 for value in candidates):
+        raise ValueError("temperature candidates must be between 0 and 2")
+    with BenchmarkProgress(enabled=sys.stderr.isatty() and not args.json) as progress:
+        result = tune(endpoint, candidates=candidates, progress=progress)
+    values = config.profiles.setdefault(config.profile, asdict(config.selected_profile))
+    values["temperature"] = result["selected_temperature"]
+    save_config(config)
+    if args.json or not sys.stdout.isatty():
+        emit(result)
+    else:
+        print(f"Selected temperature: {result['selected_temperature']:g}")
+        for candidate in result["results"]:
+            print(
+                f"  {candidate['temperature']:g}: {candidate['score']}/{len(candidate['tasks'])} "
+                f"checks · {candidate['seconds']}s"
+            )
+        print(f"Saved to the {config.profile} profile.")
     return 0
 
 
@@ -247,9 +336,31 @@ def cmd_config(args) -> int:
     elif args.operation == "pricing":
         config.coordinator_input_cost_per_million = args.input
         config.coordinator_output_cost_per_million = args.output
+    elif args.operation == "sampling":
+        current = config.selected_profile
+        temperature = _sampling_value(args.temperature, current.temperature)
+        top_p = _sampling_value(args.top_p, current.top_p)
+        top_k = _sampling_value(args.top_k, current.top_k)
+        min_p = _sampling_value(args.min_p, current.min_p)
+        _validate_sampling(temperature, top_p, top_k, min_p)
+        values = config.profiles.setdefault(config.profile, asdict(current))
+        values.update(
+            {"temperature": temperature, "top_p": top_p, "top_k": top_k, "min_p": min_p}
+        )
     save_config(config)
     emit({"config": asdict(config)})
     return 0
+
+
+def _validate_sampling(temperature: float, top_p: float, top_k: int, min_p: float) -> None:
+    if not 0 <= temperature <= 2:
+        raise ValueError("temperature must be between 0 and 2")
+    if not 0 < top_p <= 1:
+        raise ValueError("top_p must be greater than 0 and at most 1")
+    if top_k < 0:
+        raise ValueError("top_k must be non-negative")
+    if not 0 <= min_p <= 1:
+        raise ValueError("min_p must be between 0 and 1")
 
 
 def cmd_learn(_args) -> int:
@@ -331,6 +442,22 @@ def parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--json", action="store_true")
     benchmark.set_defaults(handler=cmd_benchmark)
 
+    ask = commands.add_parser("ask", help="ask the local Spark model a one-off question")
+    ask.add_argument("question", nargs="*")
+    ask.add_argument("--system", default="You are a concise, accurate local coding assistant.")
+    ask.add_argument("--max-tokens", type=int)
+    ask.add_argument("--temperature", type=float)
+    ask.add_argument("--top-p", type=float)
+    ask.add_argument("--top-k", type=int)
+    ask.add_argument("--min-p", type=float)
+    ask.add_argument("--json", action="store_true")
+    ask.set_defaults(handler=cmd_ask)
+
+    tune_parser = commands.add_parser("tune", help="auto-tune sampling on local behavior checks")
+    tune_parser.add_argument("--candidate", type=float, action="append")
+    tune_parser.add_argument("--json", action="store_true")
+    tune_parser.set_defaults(handler=cmd_tune)
+
     plan = commands.add_parser("plan", help="compile a request into a Fresnel plan")
     plan.add_argument("--repo", type=Path, required=True)
     plan.add_argument("--request", required=True)
@@ -386,6 +513,12 @@ def parser() -> argparse.ArgumentParser:
     pricing.add_argument("--input", type=float, required=True)
     pricing.add_argument("--output", type=float, required=True)
     pricing.set_defaults(handler=cmd_config)
+    sampling = config_sub.add_parser("sampling", help="tune local worker sampling")
+    sampling.add_argument("--temperature", type=float)
+    sampling.add_argument("--top-p", type=float)
+    sampling.add_argument("--top-k", type=int)
+    sampling.add_argument("--min-p", type=float)
+    sampling.set_defaults(handler=cmd_config)
 
     commands.add_parser("learn", help="propose evidence-backed prompt improvements").set_defaults(
         handler=cmd_learn

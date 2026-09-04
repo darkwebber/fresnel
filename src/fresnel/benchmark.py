@@ -64,7 +64,9 @@ def safe(result: dict[str, Any]) -> bool:
 
 
 def select_profiles(maximum_context: int, maximum_output: int) -> dict[str, dict[str, Any]]:
-    def build(name: str, context: int, output: int, cache_gb: int) -> dict[str, Any]:
+    def build(
+        name: str, context: int, output: int, cache_gb: int, temperature: float
+    ) -> dict[str, Any]:
         reserve = 1024
         return asdict(
             Profile(
@@ -74,13 +76,16 @@ def select_profiles(maximum_context: int, maximum_output: int) -> dict[str, dict
                 max_output_tokens=output,
                 safety_tokens=reserve,
                 prompt_cache_bytes=cache_gb * 1024**3,
+                temperature=temperature,
             )
         )
 
     return {
-        "eco": build("eco", min(16384, maximum_context), min(2048, maximum_output), 1),
-        "balanced": build("balanced", min(24576, maximum_context), min(4096, maximum_output), 2),
-        "maximum": build("maximum", maximum_context, maximum_output, 2),
+        "eco": build("eco", min(16384, maximum_context), min(2048, maximum_output), 1, 0.0),
+        "balanced": build(
+            "balanced", min(24576, maximum_context), min(4096, maximum_output), 2, 0.15
+        ),
+        "maximum": build("maximum", maximum_context, maximum_output, 2, 0.25),
     }
 
 
@@ -175,5 +180,9 @@ def calibrate(
         "results": results,
         "profiles": profiles,
         "selected_profile": selected,
-        "note": "Sampling temperature is fixed at 0; thermal_state describes physical pressure.",
+        "note": (
+            "Hardware pressure probes use temperature 0 for repeatability. Normal worker sampling "
+            f"is configured separately; {selected} currently uses "
+            f"temperature {profiles[selected]['temperature']}."
+        ),
     }

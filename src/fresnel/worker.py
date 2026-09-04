@@ -70,7 +70,16 @@ Do not include prose or Markdown fences."""
 
 
 def call(
-    endpoint: str, model: str, prompt: str, max_tokens: int, timeout: int = 300
+    endpoint: str,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+    timeout: int = 300,
+    *,
+    temperature: float = 0.15,
+    top_p: float = 0.9,
+    top_k: int = 40,
+    min_p: float = 0.0,
 ) -> tuple[str, dict[str, Any]]:
     payload = {
         "model": model,
@@ -81,7 +90,10 @@ def call(
             },
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0,
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "min_p": min_p,
         "max_tokens": max_tokens,
     }
     request = urllib.request.Request(

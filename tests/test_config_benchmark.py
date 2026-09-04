@@ -14,6 +14,15 @@ def test_config_roundtrip(tmp_path):
     assert loaded.selected_profile.max_output_tokens == 4096
 
 
+def test_old_profiles_receive_sampling_defaults():
+    config = Config(
+        profile="eco",
+        profiles={"eco": {"name": "eco", "context_window": 8192, "max_output_tokens": 1024}},
+    )
+    assert config.selected_profile.temperature == 0.0
+    assert config.selected_profile.top_p == 0.9
+
+
 def test_profiles_reserve_context():
     profiles = benchmark.select_profiles(32768, 8192)
     for values in profiles.values():

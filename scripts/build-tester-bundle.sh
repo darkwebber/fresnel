@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(dirname "$SCRIPT_DIR")
-VERSION=0.1.2
+VERSION=0.2.0
 STAGE="$PROJECT_DIR/dist/fresnel-$VERSION-macos-arm64"
 ARCHIVE="$PROJECT_DIR/dist/fresnel-$VERSION-macos-arm64-tester.tar.gz"
 ZIP_ARCHIVE="$PROJECT_DIR/dist/fresnel-$VERSION-macos-arm64-tester.zip"
