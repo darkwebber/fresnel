@@ -43,6 +43,7 @@ def test_onboarding_prompts_for_project_in_invalid_choice_loop(tmp_path, monkeyp
     installed = []
     monkeypatch.setattr(onboarding, "doctor", healthy)
     monkeypatch.setattr(onboarding, "load_config", lambda: Config(model_path=str(tmp_path)))
+    monkeypatch.setattr(onboarding, "save_config", lambda _value: None)
     monkeypatch.setattr(onboarding, "server_healthy", lambda _host, _port: False)
     monkeypatch.setattr(
         onboarding,
@@ -79,6 +80,7 @@ def test_onboarding_stops_when_doctor_finds_problem(monkeypatch):
 def test_onboarding_project_is_resolved(tmp_path, monkeypatch):
     monkeypatch.setattr(onboarding, "doctor", healthy)
     monkeypatch.setattr(onboarding, "load_config", lambda: Config(model_path=str(tmp_path)))
+    monkeypatch.setattr(onboarding, "save_config", lambda _value: None)
     monkeypatch.setattr(onboarding, "server_healthy", lambda _host, _port: False)
     monkeypatch.setattr(onboarding, "install_integration", lambda _product, _project: [])
     result = onboarding.run_onboarding(
