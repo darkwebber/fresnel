@@ -4,6 +4,7 @@ from fresnel.config import Config
 from fresnel.engine import _sandboxed_command, run
 from fresnel.protocol import parse_plan
 from fresnel.store import Store
+from fresnel.worker import WorkerTruncated
 
 
 def plan():
@@ -126,4 +127,48 @@ def test_operation_error_is_repaired_within_attempt_budget(tmp_path, monkeypatch
     result = run(tmp_path, parse_plan(raw), Config(), store=store)
     assert result["success"] is True, json.dumps(result, indent=2)
     assert len(result["components"][0]["attempts"]) == 2
+    store.close()
+
+
+def test_truncated_worker_output_is_never_applied_and_is_retried_compactly(
+    tmp_path, monkeypatch
+):
+    prompts = []
+
+    def worker(_endpoint, _model, prompt, *_args, **_kwargs):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            raise WorkerTruncated("<<<CREATE path=\"app.py\">>>\npartial", {"completion_tokens": 9})
+        return fake_worker()
+
+    monkeypatch.setattr("fresnel.engine.call_worker", worker)
+    monkeypatch.setattr("fresnel.engine.memory_free_percent", lambda: 55)
+    store = Store(tmp_path / "truncated.db")
+    result = run(tmp_path, plan(), Config(), store=store, apply=True)
+    attempts = result["components"][0]["attempts"]
+    assert result["success"] is True, json.dumps(result, indent=2)
+    assert len(attempts) == 2
+    assert attempts[0]["raw_output"].endswith("partial")
+    assert attempts[0]["budget"]["max_output_tokens"] == 8192
+    assert "Previous output hit the token limit" in prompts[1]
+    assert "OVERALL GOAL:\ncreate calculator" in prompts[1]
+    assert (tmp_path / "app.py").read_text().startswith("def add")
+    assert result["metrics"]["worker_truncation_retries"] == 1
+    store.close()
+
+
+def test_engine_reduces_output_budget_under_memory_pressure(tmp_path, monkeypatch):
+    observed = []
+
+    def worker(*args, **kwargs):
+        observed.append(args[3])
+        return fake_worker()
+
+    monkeypatch.setattr("fresnel.engine.call_worker", worker)
+    monkeypatch.setattr("fresnel.engine.memory_free_percent", lambda: 15)
+    store = Store(tmp_path / "pressure.db")
+    result = run(tmp_path, plan(), Config(), store=store)
+    assert result["success"] is True, json.dumps(result, indent=2)
+    assert observed == [2048]
+    assert result["components"][0]["attempts"][0]["budget"]["pressure"] == "high"
     store.close()

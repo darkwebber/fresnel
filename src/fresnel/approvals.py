@@ -19,7 +19,7 @@ def request_id(component: str, request: dict[str, Any]) -> str:
 
 def classify(request: dict[str, Any], *, web_authorized: bool = False) -> tuple[str, str]:
     kind = request.get("kind")
-    if kind == "local_docs":
+    if kind in {"local_docs", "file_excerpt"}:
         return "approve", "local read-only documentation"
     if kind == "exa":
         if web_authorized and request.get("include_domains"):

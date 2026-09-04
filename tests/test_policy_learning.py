@@ -16,6 +16,7 @@ def test_approval_policy_and_stable_ids():
         classify({"kind": "exa", "include_domains": ["docs.python.org"]}, web_authorized=True)[0]
         == "approve"
     )
+    assert classify({"kind": "file_excerpt", "path": "app.py"})[0] == "approve"
 
 
 def test_learning_requires_repetition_across_runs(tmp_path):

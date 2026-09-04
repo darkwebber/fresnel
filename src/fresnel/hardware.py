@@ -9,9 +9,12 @@ from dataclasses import asdict, dataclass
 
 
 def _command(argv: list[str]) -> str:
-    completed = subprocess.run(
-        argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
-    )
+    try:
+        completed = subprocess.run(
+            argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
+        )
+    except FileNotFoundError:
+        return ""
     return completed.stdout.strip()
 
 

@@ -17,13 +17,21 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .approvals import decide
+from .budget import allocate
 from .config import Config, environment_key
+from .hardware import memory_free_percent
 from .learning import classify_failure, signature
 from .protocol import Component, Plan, parse_plan, safe_path
-from .references import exa_reference, help_reference, pydoc_reference, render_packet
+from .references import (
+    exa_reference,
+    file_excerpt_reference,
+    help_reference,
+    pydoc_reference,
+    render_packet,
+)
 from .router import shadow_route
 from .store import Store
-from .worker import apply_operations, render_prompt
+from .worker import WorkerTruncated, apply_operations, render_prompt
 from .worker import call as call_worker
 from .worker import parse as parse_worker
 
@@ -288,6 +296,17 @@ def _metrics(report: dict, config: Config) -> dict:
         "coordinator_completion_tokens": coordinator_completion,
         "estimated_coordinator_cost_usd": round(estimated_cost, 6),
         "worker_attempts": len(attempts),
+        "worker_truncation_retries": sum(
+            "WorkerTruncated" in attempt.get("error", "") for attempt in attempts
+        ),
+        "worker_reference_reads": sum(
+            attempt.get("approval", {}).get("request", {}).get("kind") == "file_excerpt"
+            for attempt in attempts
+        ),
+        "worker_pressure_events": sum(
+            attempt.get("budget", {}).get("pressure") in {"moderate", "high", "critical"}
+            for attempt in attempts
+        ),
         "worker_prompt_tokens": sum(a.get("usage", {}).get("prompt_tokens", 0) for a in attempts),
         "worker_cached_tokens": sum(
             a.get("usage", {}).get("prompt_tokens_details", {}).get("cached_tokens", 0)
@@ -365,12 +384,32 @@ def run(
                 }
                 feedback = ""
                 for number in range(1, profile.max_attempts + 1):
-                    prompt = render_prompt(component, work, packet, feedback)
+                    initial_budget = allocate(
+                        profile,
+                        memory_free_percent=memory_free_percent(),
+                        attempt=number,
+                    )
+                    prompt = render_prompt(
+                        component,
+                        work,
+                        packet,
+                        feedback,
+                        goal=plan.objective,
+                        max_input_tokens=initial_budget.max_input_tokens,
+                        response_budget=initial_budget.max_output_tokens,
+                        attempt=number,
+                    )
                     estimated_tokens = (len(prompt) + 3) // 4
-                    if estimated_tokens > profile.max_input_tokens:
+                    budget = allocate(
+                        profile,
+                        estimated_input_tokens=estimated_tokens,
+                        memory_free_percent=initial_budget.memory_free_percent,
+                        attempt=number,
+                    )
+                    if estimated_tokens > budget.max_input_tokens:
                         raise ValueError(
                             f"component {component.id} prompt is approximately {estimated_tokens} tokens; "
-                            f"decompose it below the {profile.max_input_tokens}-token profile limit"
+                            f"decompose it below the {budget.max_input_tokens}-token pressure-adjusted limit"
                         )
                     started = time.perf_counter()
                     output = ""
@@ -380,7 +419,7 @@ def run(
                             f"http://{config.host}:{config.port}/v1/chat/completions",
                             config.model_repo,
                             prompt,
-                            profile.max_output_tokens,
+                            budget.max_output_tokens,
                             temperature=profile.temperature,
                             top_p=profile.top_p,
                             top_k=profile.top_k,
@@ -396,6 +435,9 @@ def run(
                         fallback = component.targets[0] if len(component.targets) == 1 else None
                         kind, payload = parse_worker(output, fallback_target=fallback)
                     except Exception as exc:
+                        if isinstance(exc, WorkerTruncated):
+                            output = exc.content
+                            usage = exc.usage
                         elapsed = round(time.perf_counter() - started, 3)
                         details = f"{type(exc).__name__}: {exc}"
                         category = classify_failure(details)
@@ -413,9 +455,20 @@ def run(
                                 "usage": usage,
                                 "raw_output": output,
                                 "error": details,
+                                "budget": asdict(budget),
                             }
                         )
-                        feedback = f"Previous response was unusable: {details}. Return valid bounded operations only."
+                        if isinstance(exc, WorkerTruncated):
+                            feedback = (
+                                "Previous output hit the token limit. Do not repeat prose or unchanged code. "
+                                "Use the smallest exact SEARCH/REPLACE operations that fully complete the task. "
+                                "If required file content is omitted, request one narrow file_excerpt first."
+                            )
+                        else:
+                            feedback = (
+                                f"Previous response was unusable: {details}. "
+                                "Return valid bounded operations only."
+                            )
                         continue
                     if kind in {"reference", "action"}:
                         approval = decide(
@@ -441,6 +494,12 @@ def run(
                             )
                         elif payload["kind"] == "help_command":
                             reference = help_reference(list(payload["argv"]), work)
+                        elif payload["kind"] == "file_excerpt":
+                            reference = file_excerpt_reference(
+                                work,
+                                payload,
+                                set(component.targets + component.context),
+                            )
                         elif payload["kind"] == "exa":
                             if not exa_key:
                                 raise RuntimeError("approved Exa request has no configured key")
@@ -484,6 +543,7 @@ def run(
                         work, component.validation, python=project_python
                     )
                     attempt.update({"passed": passed, "validation": validation})
+                    attempt["budget"] = asdict(budget)
                     component_result["attempts"].append(attempt)
                     store.record_call(run_id, component.id, usage, attempt["seconds"], passed)
                     if passed:

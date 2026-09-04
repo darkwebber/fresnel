@@ -10,6 +10,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .protocol import safe_path
+
 
 def pydoc_reference(symbol: str, python: str | None = None, timeout: int = 20) -> dict[str, Any]:
     python = python or sys.executable
@@ -96,6 +98,33 @@ def exa_reference(
         "domains": include_domains,
         "results": results,
         "seconds": round(time.perf_counter() - started, 3),
+    }
+
+
+def file_excerpt_reference(
+    root: Path,
+    request: dict[str, Any],
+    allowed_paths: set[str],
+    *,
+    maximum_lines: int = 400,
+) -> dict[str, Any]:
+    relative = str(request.get("path", ""))
+    if relative not in allowed_paths:
+        raise ValueError(f"file excerpt is outside declared context: {relative}")
+    path = safe_path(root, relative)
+    if not path.is_file():
+        raise ValueError(f"file excerpt target is missing: {relative}")
+    start = int(request.get("start_line", 1))
+    end = int(request.get("end_line", start + 199))
+    if start < 1 or end < start or end - start + 1 > maximum_lines:
+        raise ValueError(f"file excerpt must request 1-{maximum_lines} lines")
+    lines = path.read_text(errors="replace").splitlines()
+    selected = lines[start - 1 : end]
+    return {
+        "kind": "file_excerpt",
+        "query": {"path": relative, "start_line": start, "end_line": end},
+        "content": "\n".join(selected),
+        "line_count": len(selected),
     }
 
 

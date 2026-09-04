@@ -31,6 +31,13 @@ Use the local model directly for a small one-off question:
 fresnel ask "Write a PySpark expression that normalizes an email column"
 ```
 
+Answers stream to the terminal by default. If the server reaches its token
+ceiling, Fresnel continues the same answer up to two times while preserving the
+original question. Use `--max-continuations 0` to disable continuation,
+`--no-stream` to buffer the answer, or `--json` for machine-readable call and
+budget metrics. Requested output is reduced automatically when context headroom
+or current Mac memory pressure makes the requested ceiling unsafe.
+
 Fresnel keeps hardware pressure measurements at temperature 0 so repeated
 calibrations are comparable. Normal worker calls use the sampling values in the
 active profile (`balanced` defaults to temperature 0.15). Tune behavior locally:
@@ -79,6 +86,23 @@ fresnel review review.json
 Use `--apply` only after reviewing a passing result. Fresnel currently routes
 all real worker calls to Spark 2.5 4B MLX 8-bit; future routing runs in shadow
 mode until benchmark evidence supports activation.
+
+## Small-model context management
+
+The coordinator owns the durable goal and plan. Every worker retry restates the
+overall goal, bounded task, constraints, acceptance checks, and implementation
+contract. Fresnel reads declared files from its disposable on-disk workspace,
+fits compact head/tail excerpts into a pressure-aware input budget, and lets the
+worker request a specific 1–400 line excerpt when omitted code is needed. Local
+excerpt requests are auto-approved; undeclared paths and path escapes are
+rejected.
+
+Worker output that ends with `finish_reason=length` is never parsed or applied.
+The partial output is recorded for observability and Fresnel retries with a
+smaller-edit instruction. Input budgets shrink on retries and under memory
+pressure, while output headroom is calculated from the actual prompt instead of
+assuming the configured 4096-token default is always sufficient. Run reports
+include truncation retries, on-demand excerpt reads, and pressure events.
 
 ## Orchestrator integrations
 

@@ -6,14 +6,17 @@ import argparse
 import json
 import os
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 
 from . import __version__
 from .benchmark import calibrate
-from .chat import complete
+from .budget import allocate
+from .chat import complete, stream_complete
 from .config import config_path, environment_key, keychain_set, load_config, save_config
 from .engine import plan_request, run
+from .hardware import memory_free_percent
 from .integrations import install as install_integration
 from .integrations import uninstall as uninstall_integration
 from .learning import propose
@@ -129,27 +132,98 @@ def cmd_ask(args) -> int:
     top_p = _sampling_value(args.top_p, profile.top_p)
     top_k = _sampling_value(args.top_k, profile.top_k)
     min_p = _sampling_value(args.min_p, profile.min_p)
-    max_tokens = args.max_tokens or min(2048, profile.max_output_tokens)
+    requested_tokens = args.max_tokens or min(2048, profile.max_output_tokens)
     _validate_sampling(temperature, top_p, top_k, min_p)
-    if not 1 <= max_tokens <= profile.max_output_tokens:
+    if not 1 <= requested_tokens <= 8192:
         raise ValueError(
-            f"max_tokens must be between 1 and the active profile limit "
-            f"({profile.max_output_tokens})"
+            "max_tokens must be between 1 and 8192; Fresnel will reduce it if "
+            "context or current memory pressure requires more headroom"
         )
+    if not 0 <= args.max_continuations <= 5:
+        raise ValueError("max_continuations must be between 0 and 5")
     endpoint = f"http://{config.host}:{config.port}/v1/chat/completions"
+    conversation = [{"role": "user", "content": question}]
+    combined = ""
+    calls = []
     with BenchmarkProgress(enabled=sys.stderr.isatty() and not args.json) as progress:
         progress({"state": "started", "label": "Spark is thinking"})
         try:
-            result = complete(
-                endpoint,
-                question,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                min_p=min_p,
-                system=args.system,
-            )
+            for continuation in range(args.max_continuations + 1):
+                estimated_input = sum(len(item["content"]) for item in conversation) // 4
+                budget = allocate(
+                    profile,
+                    estimated_input_tokens=estimated_input,
+                    memory_free_percent=memory_free_percent(),
+                    attempt=continuation + 1,
+                )
+                call_tokens = min(requested_tokens, budget.max_output_tokens)
+                first = True
+                started = time.perf_counter()
+
+                def write_delta(text: str, _started: float = started) -> None:
+                    nonlocal first
+                    if first:
+                        progress(
+                            {
+                                "state": "completed",
+                                "label": "Response started",
+                                "seconds": round(time.perf_counter() - _started, 3),
+                            }
+                        )
+                        first = False
+                    print(text, end="", flush=True)
+
+                function = complete if args.json or args.no_stream else stream_complete
+                positional = (endpoint, question)
+                if function is stream_complete:
+                    positional += (write_delta,)
+                result = function(
+                    *positional,
+                    max_tokens=call_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    min_p=min_p,
+                    system=args.system,
+                    messages=conversation,
+                )
+                calls.append({**result, "content": None, "budget": asdict(budget)})
+                combined += result["content"]
+                if result["finish_reason"] != "length":
+                    break
+                if continuation == args.max_continuations:
+                    break
+                conversation.extend(
+                    [
+                        {"role": "assistant", "content": result["content"]},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Continue exactly where you stopped. Do not repeat prior text. "
+                                "Finish the original request within this response."
+                            ),
+                        },
+                    ]
+                )
+            result = {
+                "content": combined,
+                "finish_reason": result["finish_reason"],
+                "usage": {
+                    "prompt_tokens": sum(c["usage"].get("prompt_tokens", 0) for c in calls),
+                    "completion_tokens": sum(
+                        c["usage"].get("completion_tokens", 0) for c in calls
+                    ),
+                },
+                "seconds": round(sum(c["seconds"] for c in calls), 3),
+                "continuations": len(calls) - 1,
+                "calls": calls,
+            }
+            if not (args.json or args.no_stream):
+                if first and not combined:
+                    progress(
+                        {"state": "completed", "label": "Empty response", "seconds": result["seconds"]}
+                    )
+                print()
         except Exception as exc:
             progress(
                 {
@@ -159,20 +233,27 @@ def cmd_ask(args) -> int:
                 }
             )
             raise
-        progress(
-            {
-                "state": "completed",
-                "label": "Spark answered",
-                "seconds": result["seconds"],
-                "cached_tokens": result["usage"]
-                .get("prompt_tokens_details", {})
-                .get("cached_tokens", 0),
-            }
-        )
+        if args.json or args.no_stream:
+            progress(
+                {
+                    "state": "completed",
+                    "label": "Spark answered",
+                    "seconds": result["seconds"],
+                    "cached_tokens": result["usage"]
+                    .get("prompt_tokens_details", {})
+                    .get("cached_tokens", 0),
+                }
+            )
     if args.json:
         emit({**result, "sampling": {"temperature": temperature, "top_p": top_p, "top_k": top_k, "min_p": min_p}})
-    else:
+    elif args.no_stream:
         print(result["content"].rstrip())
+    if result["finish_reason"] == "length":
+        print(
+            "Fresnel: response remains incomplete after the continuation limit.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -446,11 +527,20 @@ def parser() -> argparse.ArgumentParser:
     ask.add_argument("question", nargs="*")
     ask.add_argument("--system", default="You are a concise, accurate local coding assistant.")
     ask.add_argument("--max-tokens", type=int)
+    ask.add_argument(
+        "--max-continuations",
+        type=int,
+        default=2,
+        help="automatically continue a token-limited answer (default: 2, maximum: 5)",
+    )
     ask.add_argument("--temperature", type=float)
     ask.add_argument("--top-p", type=float)
     ask.add_argument("--top-k", type=int)
     ask.add_argument("--min-p", type=float)
     ask.add_argument("--json", action="store_true")
+    ask.add_argument(
+        "--no-stream", action="store_true", help="wait and print one complete response"
+    )
     ask.set_defaults(handler=cmd_ask)
 
     tune_parser = commands.add_parser("tune", help="auto-tune sampling on local behavior checks")

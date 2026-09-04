@@ -23,8 +23,11 @@ def test_worker_call_detects_truncation(monkeypatch):
         "usage": {"completion_tokens": 10},
     }
     monkeypatch.setattr(worker.urllib.request, "urlopen", lambda *_args, **_kwargs: Response(body))
-    with pytest.raises(ValueError, match="truncated"):
+    with pytest.raises(worker.WorkerTruncated, match="truncated") as raised:
         worker.call("http://local", "spark", "prompt", 10)
+    assert raised.value.content == "partial"
+    assert raised.value.usage["completion_tokens"] == 10
+    assert raised.value.usage["finish_reason"] == "length"
 
 
 def test_worker_call_sends_profile_sampling(monkeypatch):

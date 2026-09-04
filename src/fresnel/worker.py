@@ -28,21 +28,65 @@ LOOSE_REPLACE_RE = re.compile(
 )
 
 
+class WorkerTruncated(ValueError):
+    def __init__(self, content: str, usage: dict[str, Any]):
+        super().__init__("finish_reason length: worker output was truncated")
+        self.content = content
+        self.usage = usage
+
+
+def _bounded_content(content: str, character_limit: int, relative: str) -> str:
+    if len(content) <= character_limit:
+        return content
+    marker = (
+        f"\n[... {len(content) - character_limit:,} characters omitted from {relative}; "
+        "request a file_excerpt for the needed line range ...]\n"
+    )
+    usable = max(200, character_limit - len(marker))
+    head = int(usable * 0.6)
+    return content[:head] + marker + content[-(usable - head) :]
+
+
 def render_prompt(
-    component: Component, root: Path, references: str = "", feedback: str = ""
+    component: Component,
+    root: Path,
+    references: str = "",
+    feedback: str = "",
+    *,
+    goal: str | None = None,
+    max_input_tokens: int | None = None,
+    response_budget: int | None = None,
+    attempt: int = 1,
 ) -> str:
+    input_characters = max_input_tokens * 4 if max_input_tokens else 10**9
+    reference_limit = min(12000, max(2000, input_characters // 5))
+    references = _bounded_content(references, reference_limit, "reference packet")
+    paths = tuple(dict.fromkeys(component.targets + component.context))
+    fixed_estimate = 5000 + len(feedback) + len(references) + len(goal or "")
+    available_file_characters = max(1000, input_characters - fixed_estimate)
+    per_file_limit = max(300, available_file_characters // max(1, len(paths)))
     blocks = []
-    for relative in dict.fromkeys(component.targets + component.context):
+    for relative in paths:
         path = safe_path(root, relative)
         if path.is_file():
-            content = path.read_text(errors="replace")
+            raw_content = path.read_text(errors="replace")
+            line_count = len(raw_content.splitlines())
+            content = _bounded_content(raw_content, per_file_limit, relative)
+            description = f"{line_count} lines"
         elif relative in component.targets:
             content = "[FILE DOES NOT EXIST — use CREATE]"
+            description = "missing target"
         else:
             raise ValueError(f"missing context file: {relative}")
-        blocks.append(f'FILE "{relative}"\n<<<CONTENT>>>\n{content}\n<<<END_CONTENT>>>')
+        blocks.append(
+            f'FILE "{relative}" ({description})\n<<<CONTENT>>>\n{content}\n<<<END_CONTENT>>>'
+        )
     return f"""You are Spark 2.5, a bounded coding worker. Execute the supplied design; do not redesign it.
 
+ATTEMPT: {attempt}
+OUTPUT BUDGET: {response_budget or '[profile default]'} tokens. Use the smallest complete edit.
+
+OVERALL GOAL:\n{goal or component.task}
 TASK:\n{component.task}
 TARGETS:\n{chr(10).join("- " + value for value in component.targets)}
 CONSTRAINTS:\n{chr(10).join("- " + value for value in component.constraints)}
@@ -65,8 +109,11 @@ complete content
 <<<END>>>
 
 If an API fact is missing, return one JSON request between NEEDS_REFERENCE and END markers.
+If file content was omitted, request only the needed range:
+<<<NEEDS_REFERENCE>>>{{"kind":"file_excerpt","path":"relative.py","start_line":1,"end_line":200}}<<<END>>>
 For any other required action, return one JSON request between REQUEST_ACTION and END markers.
-Do not include prose or Markdown fences."""
+Do not include prose or Markdown fences. Never sacrifice a closing END marker. Prefer a small
+SEARCH/REPLACE over recreating a whole existing file."""
 
 
 def call(
@@ -108,7 +155,7 @@ def call(
     usage = dict(body.get("usage", {}))
     usage["finish_reason"] = choice.get("finish_reason")
     if choice.get("finish_reason") == "length":
-        raise ValueError("finish_reason length: worker output was truncated")
+        raise WorkerTruncated(choice["message"].get("content", ""), usage)
     return choice["message"].get("content", ""), usage
 
 
