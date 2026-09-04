@@ -5,6 +5,16 @@ as Codex, Cursor, or OpenCode delegate bounded coding components to a local
 Spark 2.5 MLX worker. It owns contracts, references, approvals, disposable
 workspaces, validation, assembly, and cost/quality metrics.
 
+## Homebrew install
+
+```bash
+brew install --yes darkwebber/tap/fresnel
+fresnel setup --yes
+```
+
+The explicit `--yes` avoids Homebrew 6's default confirmation prompt in
+embedded terminals. It does not disable tap-trust checks.
+
 ## Development install
 
 ```bash
