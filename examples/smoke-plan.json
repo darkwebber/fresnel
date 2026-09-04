@@ -1,0 +1,31 @@
+{
+  "protocol_version": "1.0",
+  "objective": "Create a small validated calculator module",
+  "contracts": [
+    {
+      "path": "test_contract.py",
+      "content": "from calculator import clamp\n\nassert clamp(-1, 0, 10) == 0\nassert clamp(4, 0, 10) == 4\nassert clamp(11, 0, 10) == 10\ntry:\n    clamp(1, 5, 2)\nexcept ValueError:\n    pass\nelse:\n    raise AssertionError('invalid bounds must raise ValueError')\n"
+    }
+  ],
+  "components": [
+    {
+      "id": "calculator",
+      "task": "Create calculator.py implementing the supplied clamp contract.",
+      "depends_on": [],
+      "targets": ["calculator.py"],
+      "context": ["test_contract.py"],
+      "constraints": ["Use only the Python standard library", "Do not edit the contract"],
+      "acceptance": ["All four contract cases pass"],
+      "implementation": ["Define clamp(value, lower, upper)", "Raise ValueError when lower is greater than upper", "Otherwise return max(lower, min(value, upper))"],
+      "validation": [["python3", "test_contract.py"]],
+      "references": {
+        "local_docs": [],
+        "help_commands": [],
+        "web_queries": [],
+        "allow_worker_web": false
+      }
+    }
+  ],
+  "integration_validation": [["python3", "test_contract.py"]],
+  "review_checklist": ["Signature matches the contract", "Invalid bounds raise ValueError", "No dependency was added"]
+}

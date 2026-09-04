@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fresnel"
+  short_description: "Delegate bounded coding work to a local Spark model"
+  default_prompt: "Use $fresnel to plan, delegate, validate, and review this coding task with the local worker."

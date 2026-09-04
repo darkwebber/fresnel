@@ -1,0 +1,16 @@
+{
+  "protocol_version": "1.0",
+  "objective": "Repair deterministic SQL deduplication",
+  "contracts": [],
+  "components": [{
+    "id": "sql_dedup", "task": "Replace LATEST_ORDER_SQL so it satisfies the SQLite tests.", "depends_on": [],
+    "targets": ["queries.py"], "context": ["test_queries.py"],
+    "constraints": ["Do not edit tests", "Return the complete row, not independently aggregated columns", "Use SQLite-compatible SQL"],
+    "acceptance": ["Exactly one deterministic row is returned per order_id", "All unittest cases pass"],
+    "implementation": ["Use ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY ...)", "Rank non-NULL updated_at before NULL using (updated_at IS NULL) ASC", "Then rank updated_at DESC, status ASC, and amount DESC", "Select order_id, updated_at, status, amount where row number equals one and order by order_id"],
+    "validation": [["python3", "-m", "unittest", "-v"]],
+    "references": {"local_docs": ["sqlite3"], "help_commands": [], "web_queries": [], "allow_worker_web": false}
+  }],
+  "integration_validation": [["python3", "-m", "unittest", "-v"]],
+  "review_checklist": ["Null ordering is explicit", "Tie-break order matches contract", "Selected fields come from one row"]
+}

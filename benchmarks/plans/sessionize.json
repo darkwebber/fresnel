@@ -1,0 +1,16 @@
+{
+  "protocol_version": "1.0",
+  "objective": "Repair per-user sessionization",
+  "contracts": [],
+  "components": [{
+    "id": "sessionize", "task": "Fix sessionize to satisfy the existing tests.", "depends_on": [],
+    "targets": ["sessionize.py"], "context": ["test_sessionize.py"],
+    "constraints": ["Do not mutate input dictionaries", "Return rows in original order", "Session IDs restart at one for each user"],
+    "acceptance": ["All unittest cases pass"],
+    "implementation": ["Replace the flawed global-state algorithm; do not merely change >= to >", "Start with result = [dict(event) for event in events]", "Build positions_by_user as a dictionary mapping each user_id to original integer positions using enumerate(result)", "For each user's position list, use sorted(positions, key=lambda position: result[position]['event_time'])", "Set session_id = 1 and previous_time = None separately inside each user loop", "For each sorted position, increment only when previous_time is not None and result[position]['event_time'] - previous_time > timedelta(minutes=gap_minutes), then assign result[position]['session_id']", "Return result directly so original positional order is preserved"],
+    "validation": [["python3", "-m", "unittest", "-v"]],
+    "references": {"local_docs": [], "help_commands": [], "web_queries": [], "allow_worker_web": false}
+  }],
+  "integration_validation": [["python3", "-m", "unittest", "-v"]],
+  "review_checklist": ["Strict greater-than threshold", "Per-user state", "Original order and input preserved"]
+}

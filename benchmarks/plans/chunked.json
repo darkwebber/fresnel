@@ -1,0 +1,16 @@
+{
+  "protocol_version": "1.0",
+  "objective": "Repair lazy chunking",
+  "contracts": [],
+  "components": [{
+    "id": "chunked", "task": "Fix chunked to satisfy the existing tests.", "depends_on": [],
+    "targets": ["chunking.py"], "context": ["test_chunking.py"],
+    "constraints": ["Do not edit tests", "Accept any iterable", "Consume input lazily"],
+    "acceptance": ["All unittest cases pass"],
+    "implementation": ["Import islice with: from itertools import islice", "Raise ValueError in chunked itself before returning an iterator, not inside a generator body", "Create iterator = iter(iterable) once", "Define and return a nested generator", "Inside while True use exactly: chunk = list(islice(iterator, size))", "Return from the nested generator when not chunk; otherwise yield chunk"],
+    "validation": [["python3", "-m", "unittest", "-v"]],
+    "references": {"local_docs": ["itertools.islice"], "help_commands": [], "web_queries": [], "allow_worker_web": false}
+  }],
+  "integration_validation": [["python3", "-m", "unittest", "-v"]],
+  "review_checklist": ["No eager list conversion", "Iterator is consumed once"]
+}

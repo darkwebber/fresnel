@@ -1,0 +1,45 @@
+{
+  "model": "abenzerps/Spark-X2.5-4B-MLX-8bit",
+  "suite": ["chunked", "sessionize", "sql_dedup"],
+  "fresnel_v0_1": {
+    "passed": 3,
+    "total": 3,
+    "worker_prompt_tokens": 10011,
+    "worker_completion_tokens": 877,
+    "worker_attempts": 4,
+    "worker_seconds": 40.396
+  },
+  "legacy_autonomous": {
+    "passed": 1,
+    "total": 3,
+    "worker_prompt_tokens": 13350,
+    "worker_completion_tokens": 871,
+    "worker_seconds": 35.851
+  },
+  "legacy_structured": {
+    "passed": 0,
+    "total": 3,
+    "worker_prompt_tokens": 6111,
+    "worker_completion_tokens": 1038,
+    "worker_seconds": 39.264
+  },
+  "legacy_orchestrated": {
+    "passed": 0,
+    "total": 3,
+    "worker_prompt_tokens": 9596,
+    "worker_completion_tokens": 1404,
+    "worker_seconds": 61.748
+  },
+  "derived_vs_legacy_autonomous": {
+    "successful_tasks_per_completion_token_multiplier": 2.979,
+    "successful_tasks_per_total_worker_token_multiplier": 3.918,
+    "prompt_token_change_percent": -25.01,
+    "completion_token_change_percent": 0.689,
+    "wall_time_change_percent": 12.677
+  },
+  "caveats": [
+    "The suite has only three tasks and is a directional engineering benchmark, not a general capability score.",
+    "Fresnel plans were authored by the orchestrator, so coordinator API tokens and pricing are not included in these worker-only totals.",
+    "All Fresnel runs were validated in disposable macOS sandboxes and were not applied to the fixture repositories."
+  ]
+}
