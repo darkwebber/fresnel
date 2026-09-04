@@ -12,8 +12,11 @@ from pathlib import Path
 
 from . import __version__
 from .benchmark import calibrate
+from .capabilities import CAPABILITIES, discover
 from .chat import complete, stream_complete
 from .config import config_path, environment_key, keychain_set, load_config, save_config
+from .dashboard import render as render_dashboard
+from .dashboard import view_model as dashboard_view_model
 from .engine import plan_request, run
 from .hardware import memory_free_percent as _memory_free_percent
 from .integrations import auto_sync as auto_sync_integrations
@@ -24,9 +27,10 @@ from .integrations import repair as repair_integration
 from .integrations import status as status_integrations
 from .integrations import sync as sync_integrations
 from .integrations import uninstall as uninstall_integration
-from .learning import propose
+from .learning import evaluate, propose, rollback
 from .mcp_server import serve as serve_mcp
 from .memory import Memory
+from .notifications import notify as macos_notify
 from .onboarding import run_onboarding
 from .progress import BenchmarkProgress
 from .protocol import parse_plan
@@ -36,7 +40,10 @@ from .router import shadow_route
 from .sampling import DEFAULT_CANDIDATES, tune
 from .setup import doctor, guided_setup, server_command, uninstall_setup
 from .store import Store
+from .supervisor import lease
+from .supervisor import serve as serve_supervisor
 from .terminal import LiveDraft, copy_markdown, render_markdown
+from .workspace import Workspace
 
 memory_free_percent = _memory_free_percent  # compatibility hook for integrations/tests
 
@@ -100,7 +107,27 @@ def cmd_doctor(args) -> int:
     if args.fix and not result["healthy"]:
         result["repair"] = guided_setup(assume_yes=args.yes, skip_benchmark=True)
         result = {"before": result, "after": doctor()}
-    emit(result)
+    if args.json or not sys.stdout.isatty():
+        emit(result)
+    else:
+        current = result.get("after", result)
+        healthy = current.get("healthy", False)
+        hardware = current.get("hardware", {})
+        print("╭─ FRESNEL DOCTOR ───────────────────────────────────╮")
+        print(f"│  {'✓ Healthy' if healthy else '! Needs attention':<50}│")
+        print("╰────────────────────────────────────────────────────╯")
+        print(
+            f"  Mac       {hardware.get('chip', 'Apple Silicon')} · "
+            f"{current.get('memory_free_percent', '?')}% memory free"
+        )
+        endpoint = current.get("worker_endpoint", {})
+        print(f"  Worker    {'reachable' if endpoint.get('reachable') else 'idle/offline'}")
+        for problem in current.get("problems", []):
+            print(f"  ✗ {problem}")
+        for warning in current.get("warnings", []):
+            print(f"  • {warning}")
+        if not healthy and not args.fix:
+            print("\n  Safe repair: fresnel doctor --fix --yes")
     health = result.get("healthy", result.get("after", {}).get("healthy", False))
     return 0 if health else 1
 
@@ -123,7 +150,20 @@ def cmd_benchmark(args) -> int:
     endpoint = f"http://{config.host}:{config.port}/v1/chat/completions"
     interactive = sys.stderr.isatty() and not args.json
     with progress_reporter(args, enabled=interactive) as progress:
-        result = calibrate(endpoint, quick=args.quick, progress=progress)
+        with lease(f"benchmark-{os.getpid()}-{time.time_ns()}") as runtime_lease:
+            result = calibrate(endpoint, quick=args.quick, progress=progress)
+        result["runtime_lease"] = runtime_lease
+        persisted = Store()
+        try:
+            persisted.finish(result["run_id"], result["status"], result)
+        finally:
+            persisted.close()
+        if result.get("notifications"):
+            macos_notify("Fresnel needs approval", f"Run {result['run_id'][:8]} is waiting")
+        elif result.get("success"):
+            macos_notify("Fresnel completed", f"Run {result['run_id'][:8]} passed validation")
+        else:
+            macos_notify("Fresnel needs attention", f"Run {result['run_id'][:8]} failed")
     config.profiles = result["profiles"]
     config.profile = result["selected_profile"]
     save_config(config)
@@ -201,28 +241,30 @@ def cmd_ask(args) -> int:
                             first = False
                         draft.write(text)
 
-                    result = generate_response(
-                        endpoint,
-                        question,
-                        profile=profile,
-                        requested_tokens=requested_tokens,
-                        max_continuations=args.max_continuations,
-                        max_total_tokens=max_total_tokens,
-                        temperature=temperature,
-                        top_p=top_p,
-                        top_k=top_k,
-                        min_p=min_p,
-                        system=args.system,
-                        streaming=not args.no_stream and not args.json,
-                        on_text=write_delta if live else None,
-                        on_segment_reset=draft.reset if live else None,
-                        memory=memory,
-                        session_name=args.session,
-                        repo=Path.cwd(),
-                        resume=args.resume,
-                        stream_fn=stream_complete,
-                        complete_fn=complete,
-                    )
+                    with lease(f"ask-{os.getpid()}-{time.time_ns()}") as runtime_lease:
+                        result = generate_response(
+                            endpoint,
+                            question,
+                            profile=profile,
+                            requested_tokens=requested_tokens,
+                            max_continuations=args.max_continuations,
+                            max_total_tokens=max_total_tokens,
+                            temperature=temperature,
+                            top_p=top_p,
+                            top_k=top_k,
+                            min_p=min_p,
+                            system=args.system,
+                            streaming=not args.no_stream and not args.json,
+                            on_text=write_delta if live else None,
+                            on_segment_reset=draft.reset if live else None,
+                            memory=memory,
+                            session_name=args.session,
+                            repo=Path.cwd(),
+                            resume=args.resume,
+                            stream_fn=stream_complete,
+                            complete_fn=complete,
+                        )
+                    result["runtime_lease"] = runtime_lease
             except Exception as exc:
                 progress(
                     {
@@ -362,11 +404,25 @@ def cmd_plan(args) -> int:
 
 
 def cmd_run(args) -> int:
+    if not args.resume and args.repo is None:
+        raise ValueError("run requires --repo unless --resume is used")
     with progress_reporter(args, enabled=sys.stderr.isatty()) as progress:
         coordinator_calls = []
-        if args.plan:
+        resume_run_id = args.resume
+        if resume_run_id:
+            store = Store()
+            try:
+                workspace = Workspace.load(store, resume_run_id)
+                metadata = workspace.metadata()
+                plan = parse_plan(metadata["plan"])
+                repo = Path(metadata["source_root"])
+                request = plan.objective
+            finally:
+                store.close()
+        elif args.plan:
             plan = parse_plan(json.loads(args.plan.read_text()))
             request = args.request or plan.objective
+            repo = args.repo
         else:
             endpoint, model, key = coordinator_settings(args)
             planning_started = time.perf_counter()
@@ -410,16 +466,31 @@ def cmd_run(args) -> int:
                 }
             )
             request = args.request
-        result = run(
-            args.repo,
-            plan,
-            load_config(),
-            request=request,
-            apply=args.apply,
-            decisions=load_decisions(args.approval_decisions),
-            coordinator_calls=coordinator_calls,
-            progress=progress,
+            repo = args.repo
+        lease_id = resume_run_id or f"cli-{os.getpid()}-{time.time_ns()}"
+        progress(
+            {
+                "state": "updated",
+                "phase": "runtime",
+                "label": "Acquiring local Spark worker",
+                "progress": 0,
+                "total": len(plan.components),
+                "eta_seconds": None,
+            }
         )
+        with lease(lease_id) as runtime_lease:
+            result = run(
+                repo,
+                plan,
+                load_config(),
+                request=request,
+                apply=args.apply,
+                decisions=load_decisions(args.approval_decisions),
+                coordinator_calls=coordinator_calls,
+                progress=progress,
+                resume_run_id=resume_run_id,
+            )
+        result["runtime_lease"] = runtime_lease
     if args.output:
         args.output.write_text(json.dumps(result, indent=2) + "\n")
     diff = result.get("diff", "")
@@ -432,6 +503,7 @@ def cmd_run(args) -> int:
             "success": result["success"],
             "applied": result["applied"],
             "metrics": result.get("metrics"),
+            "runtime_lease": result.get("runtime_lease"),
             "progress": result.get("progress"),
             "notifications": result.get("notifications"),
             "failed_components": [
@@ -451,7 +523,96 @@ def cmd_run(args) -> int:
 
 
 def cmd_status(args) -> int:
-    emit({"runs": Store().recent_runs(args.limit)})
+    store = Store()
+    try:
+        if args.run:
+            if not args.follow:
+                result = store.run(args.run)
+                if not result:
+                    raise ValueError(f"unknown run: {args.run}")
+                emit(result)
+                return 0
+            seen = 0
+            terminal = {
+                "READY_TO_APPLY",
+                "APPLIED",
+                "COMPONENT_FAILED",
+                "FAILED",
+                "CANCELLED",
+                "INTERRUPTED",
+                "AWAITING_APPROVAL",
+            }
+            while True:
+                rows = store.connection.execute(
+                    "SELECT id, created_at, kind, payload_json FROM events "
+                    "WHERE run_id=? AND id>? ORDER BY id",
+                    (args.run, seen),
+                ).fetchall()
+                for row in rows:
+                    seen = row["id"]
+                    payload = json.loads(row["payload_json"])
+                    if args.json or not sys.stdout.isatty():
+                        emit({"id": seen, "kind": row["kind"], "payload": payload}, compact=True)
+                    else:
+                        print(f"  {row['kind']:<20} {payload.get('component_id') or payload.get('summary', '')}")
+                current = store.run(args.run)
+                if not current:
+                    raise ValueError(f"unknown run: {args.run}")
+                if current["status"] in terminal:
+                    return 0 if current["status"] not in {"FAILED", "COMPONENT_FAILED"} else 1
+                time.sleep(0.5)
+        emit({"runs": store.recent_runs(args.limit)})
+        return 0
+    finally:
+        store.close()
+
+
+def cmd_cancel(args) -> int:
+    store = Store()
+    try:
+        cancelled = store.cancel(args.run)
+        if not cancelled:
+            raise ValueError(f"unknown run: {args.run}")
+        emit({"run_id": args.run, "cancel_requested": True})
+        return 0
+    finally:
+        store.close()
+
+
+def cmd_capabilities(args) -> int:
+    if args.intent:
+        emit({"intent": args.intent, "matches": discover(args.intent)})
+    else:
+        emit(
+            {
+                "capabilities": [
+                    {"name": name, "description": description}
+                    for name, description in CAPABILITIES.items()
+                ]
+            }
+        )
+    return 0
+
+
+def cmd_internal_server_command(_args) -> int:
+    emit({"command": server_command(load_config())}, compact=True)
+    return 0
+
+
+def cmd_internal_supervisor_config(_args) -> int:
+    config = load_config()
+    emit(
+        {
+            "command": server_command(config),
+            "host": config.host,
+            "port": config.port,
+            "idle_seconds_ac": config.idle_seconds_ac,
+            "idle_seconds_battery": config.idle_seconds_battery,
+            "log_path": str(Path.home() / "Library/Logs/Fresnel/worker.log"),
+            "events_path": str(Path.home() / "Library/Logs/Fresnel/runtime.ndjson"),
+        },
+        compact=True,
+    )
     return 0
 
 
@@ -547,7 +708,62 @@ def cmd_memory(args) -> int:
             memory.pin(args.blob_id)
             result = {"pinned": args.blob_id}
         elif args.operation == "gc":
-            result = {"removed": memory.gc(dry_run=args.dry_run), "dry_run": args.dry_run}
+            result = {
+                "blobs_removed": memory.gc(dry_run=args.dry_run),
+                "workspaces_removed": Workspace.gc(
+                    memory.store, dry_run=args.dry_run
+                ),
+                "dry_run": args.dry_run,
+            }
+        elif args.operation == "profile":
+            result = {
+                "personalization_enabled": memory.personalization_enabled(),
+                "facts": memory.profile(repo),
+            }
+        elif args.operation == "personalization":
+            memory.set_personalization(args.value == "on")
+            result = {"personalization_enabled": memory.personalization_enabled()}
+        elif args.operation == "remember":
+            try:
+                value = json.loads(args.value)
+            except json.JSONDecodeError:
+                value = args.value
+            fact_id = memory.remember(args.key, value, repo=repo)
+            result = {"remembered": fact_id, "key": args.key}
+        elif args.operation == "observe":
+            try:
+                value = json.loads(args.value)
+            except json.JSONDecodeError:
+                value = args.value
+            promoted = memory.observe(
+                args.key,
+                value,
+                repo=repo,
+                run_id=args.run,
+                source=args.source,
+            )
+            result = {
+                "observed": True,
+                "promoted_fact": promoted,
+                "personalization_enabled": memory.personalization_enabled(),
+            }
+        elif args.operation == "explain":
+            result = memory.explain_fact(args.fact_id)
+        elif args.operation == "correct":
+            previous = memory.explain_fact(args.fact_id)
+            try:
+                value = json.loads(args.value)
+            except json.JSONDecodeError:
+                value = args.value
+            fact_id = memory.remember(previous["kind"], value, repo=repo, source="user-correction")
+            result = {"corrected": args.fact_id, "replacement": fact_id}
+        elif args.operation == "forget-fact":
+            result = {"forgotten": memory.forget_fact(args.fact_id), "fact_id": args.fact_id}
+        elif args.operation == "export":
+            result = {
+                "profile": memory.profile(repo),
+                "status": memory.status(repo),
+            }
         elif args.operation == "forget":
             session_id = None
             if args.session:
@@ -573,6 +789,10 @@ def cmd_memory(args) -> int:
 
 def cmd_key(args) -> int:
     keychain_set(args.account, args.value)
+    if args.account == "exa-api-key":
+        config = load_config()
+        config.exa_enabled = True
+        save_config(config)
     emit({"stored": args.account, "service": "fresnel"})
     return 0
 
@@ -599,6 +819,8 @@ def cmd_config(args) -> int:
         values.update(
             {"temperature": temperature, "top_p": top_p, "top_k": top_k, "min_p": min_p}
         )
+    elif args.operation == "exa":
+        config.exa_enabled = args.value == "on"
     save_config(config)
     emit({"config": asdict(config)})
     return 0
@@ -615,10 +837,27 @@ def _validate_sampling(temperature: float, top_p: float, top_k: int, min_p: floa
         raise ValueError("min_p must be between 0 and 1")
 
 
-def cmd_learn(_args) -> int:
+def cmd_learn(args) -> int:
     store = Store()
-    emit({"mode": "proposal_only", "proposals": propose(store), "existing": store.improvements()})
-    return 0
+    try:
+        if args.evaluate:
+            if not args.improvement:
+                raise ValueError("--evaluate requires --improvement")
+            evidence = json.loads(args.evaluate.read_text())
+            emit(evaluate(store, args.improvement, evidence))
+        elif args.rollback:
+            emit(rollback(store, args.rollback))
+        else:
+            emit(
+                {
+                    "mode": "shadow_candidates",
+                    "proposals": propose(store),
+                    "existing": store.improvements(),
+                }
+            )
+        return 0
+    finally:
+        store.close()
 
 
 def cmd_route(args) -> int:
@@ -662,7 +901,7 @@ def cmd_migrate(args) -> int:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="fresnel", description="Fresnel local-agent harness")
     root.add_argument("--version", action="version", version=f"Fresnel {__version__}")
-    commands = root.add_subparsers(dest="command", required=True)
+    commands = root.add_subparsers(dest="command")
 
     def add_progress(command_parser: argparse.ArgumentParser) -> None:
         command_parser.add_argument(
@@ -747,11 +986,12 @@ def parser() -> argparse.ArgumentParser:
     add_progress(plan)
     plan.set_defaults(handler=cmd_plan)
 
-    run_parser = commands.add_parser("run", help="plan/delegate/validate in a disposable workspace")
-    run_parser.add_argument("--repo", type=Path, required=True)
+    run_parser = commands.add_parser("run", help="plan/delegate/validate in a durable workspace")
+    run_parser.add_argument("--repo", type=Path)
     source = run_parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--plan", type=Path)
     source.add_argument("--request")
+    source.add_argument("--resume", metavar="RUN_ID")
     run_parser.add_argument("--coordinator-endpoint")
     run_parser.add_argument("--coordinator-model")
     run_parser.add_argument("--approval-decisions", type=Path)
@@ -763,7 +1003,19 @@ def parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status", help="show recent runs")
     status.add_argument("--limit", type=int, default=20)
     status.add_argument("--json", action="store_true")
+    status.add_argument("--run")
+    status.add_argument("--follow", action="store_true")
     status.set_defaults(handler=cmd_status)
+
+    cancel = commands.add_parser("cancel", help="checkpoint and cancel a running task")
+    cancel.add_argument("run")
+    cancel.set_defaults(handler=cmd_cancel)
+
+    capabilities = commands.add_parser(
+        "capabilities", help="show lazily available worker capabilities"
+    )
+    capabilities.add_argument("intent", nargs="?")
+    capabilities.set_defaults(handler=cmd_capabilities)
 
     approval = commands.add_parser("approve", help="record an approval decision")
     approval.add_argument("request_id")
@@ -813,6 +1065,42 @@ def parser() -> argparse.ArgumentParser:
     memory_gc = memory_commands.add_parser("gc")
     memory_gc.add_argument("--dry-run", action="store_true")
     memory_gc.set_defaults(handler=cmd_memory, repo=None)
+    memory_profile = memory_commands.add_parser("profile", help="show local user/project facts")
+    memory_profile.add_argument("--repo", type=Path)
+    memory_profile.set_defaults(handler=cmd_memory)
+    personalization = memory_commands.add_parser(
+        "personalization", help="enable or disable inferred local preferences"
+    )
+    personalization.add_argument("value", choices=("on", "off"))
+    personalization.set_defaults(handler=cmd_memory, repo=None)
+    remember = memory_commands.add_parser("remember", help="store an explicit non-secret fact")
+    remember.add_argument("key")
+    remember.add_argument("value")
+    remember.add_argument("--repo", type=Path)
+    remember.set_defaults(handler=cmd_memory)
+    observe = memory_commands.add_parser(
+        "observe", help="record a non-sensitive orchestrator observation"
+    )
+    observe.add_argument("key")
+    observe.add_argument("value")
+    observe.add_argument("--run", required=True)
+    observe.add_argument("--source", default="orchestrator-review")
+    observe.add_argument("--repo", type=Path)
+    observe.set_defaults(handler=cmd_memory)
+    explain = memory_commands.add_parser("explain", help="explain a fact and its provenance")
+    explain.add_argument("fact_id")
+    explain.set_defaults(handler=cmd_memory, repo=None)
+    correct = memory_commands.add_parser("correct", help="supersede an incorrect fact")
+    correct.add_argument("fact_id")
+    correct.add_argument("value")
+    correct.add_argument("--repo", type=Path)
+    correct.set_defaults(handler=cmd_memory)
+    forget_fact = memory_commands.add_parser("forget-fact", help="invalidate one fact")
+    forget_fact.add_argument("fact_id")
+    forget_fact.set_defaults(handler=cmd_memory, repo=None)
+    memory_export = memory_commands.add_parser("export", help="export non-secret memory metadata")
+    memory_export.add_argument("--repo", type=Path)
+    memory_export.set_defaults(handler=cmd_memory)
     memory_forget = memory_commands.add_parser("forget")
     forget_target = memory_forget.add_mutually_exclusive_group(required=True)
     forget_target.add_argument("--run")
@@ -842,16 +1130,30 @@ def parser() -> argparse.ArgumentParser:
     sampling.add_argument("--top-k", type=int)
     sampling.add_argument("--min-p", type=float)
     sampling.set_defaults(handler=cmd_config)
+    exa = config_sub.add_parser("exa", help="enable or disable authorized Exa references")
+    exa.add_argument("value", choices=("on", "off"))
+    exa.set_defaults(handler=cmd_config)
 
-    commands.add_parser("learn", help="propose evidence-backed prompt improvements").set_defaults(
-        handler=cmd_learn
-    )
+    learn = commands.add_parser("learn", help="evaluate reversible harness improvements")
+    learn.add_argument("--evaluate", type=Path, help="shadow-regression evidence JSON")
+    learn.add_argument("--improvement", help="candidate id used with --evaluate")
+    learn.add_argument("--rollback", help="active playbook id to roll back")
+    learn.set_defaults(handler=cmd_learn)
     route = commands.add_parser("route", help="show the shadow routing decision")
     route.add_argument("--target", action="append", default=[])
     route.add_argument("--api-uncertainty", action="store_true")
     route.set_defaults(handler=cmd_route)
     commands.add_parser("mcp", help="serve MCP over stdio").set_defaults(
         handler=lambda _args: serve_mcp() or 0
+    )
+    commands.add_parser("internal-supervisor", help=argparse.SUPPRESS).set_defaults(
+        handler=lambda _args: serve_supervisor() or 0
+    )
+    commands.add_parser("internal-server-command", help=argparse.SUPPRESS).set_defaults(
+        handler=cmd_internal_server_command
+    )
+    commands.add_parser("internal-supervisor-config", help=argparse.SUPPRESS).set_defaults(
+        handler=cmd_internal_supervisor_config
     )
 
     formula = commands.add_parser("formula", help="generate a Homebrew release formula")
@@ -874,6 +1176,9 @@ def parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = parser().parse_args()
     try:
+        if args.command is None:
+            render_dashboard(dashboard_view_model())
+            raise SystemExit(0)
         if (
             sys.stdin.isatty()
             and sys.stdout.isatty()

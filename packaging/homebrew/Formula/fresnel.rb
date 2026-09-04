@@ -3,21 +3,33 @@ class Fresnel < Formula
 
   desc "Mac-native orchestration harness for bounded local coding agents"
   homepage "https://github.com/darkwebber/fresnel"
-  url "https://github.com/darkwebber/fresnel/releases/download/v0.4.2/fresnel_agent-0.4.2.tar.gz"
-  sha256 "e62ff203ad3ab23e30bd367676c757b42240e50f3fff23d1da3c12e7a74bb84c"
+  url "https://github.com/darkwebber/fresnel/releases/download/v0.5.0/fresnel_agent-0.5.0.tar.gz"
+  sha256 "5ac5974255f44ec3d26fd041fcc22c3bd55513a4ec3a57091afaf8da55808917"
   license "Apache-2.0"
 
   depends_on arch: :arm64
   depends_on "darkwebber/tap/termtex"
   depends_on "glow"
   depends_on "python@3.13"
-  depends_on "uv"
 
   def install
+    system "/usr/bin/swiftc", "-O", "-target", "arm64-apple-macosx14.0",
+           buildpath/"native/FresnelUI.swift", "-o", buildpath/"fresnel-ui"
+    system "/usr/bin/swiftc", "-O", "-target", "arm64-apple-macosx14.0",
+           buildpath/"native/FresnelSupervisor.swift", "-o", buildpath/"fresnel-supervisor"
+    system "/usr/bin/codesign", "--force", "--sign", "-", buildpath/"fresnel-ui"
+    system "/usr/bin/codesign", "--force", "--sign", "-", buildpath/"fresnel-supervisor"
     virtualenv_install_with_resources
+    bin.install buildpath/"fresnel-ui", buildpath/"fresnel-supervisor"
   end
 
   test do
-    assert_match "Fresnel 0.4.2", shell_output("#{bin}/fresnel --version")
+    assert_match "Fresnel 0.5.0", shell_output("#{bin}/fresnel --version")
+    dashboard = pipe_output(
+      "#{bin}/fresnel-ui dashboard",
+      '{"healthy":true,"worker":"idle","chip":"Apple Silicon","memory_free_percent":50,"profile":"balanced","personalization":false,"runs":[]}',
+    )
+    assert_match "FRESNEL", dashboard
+    assert_match '"ok":true', shell_output("#{bin}/fresnel-supervisor --self-test")
   end
 end

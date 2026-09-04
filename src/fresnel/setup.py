@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -17,13 +18,15 @@ from .benchmark import calibrate
 from .config import (
     MODEL_REPO,
     MODEL_REVISION,
-    RUNTIME_REPO,
-    RUNTIME_REVISION,
+    RUNTIME_WHEEL_SHA256,
+    RUNTIME_WHEEL_URL,
     Config,
     application_support,
+    cache_dir,
     ensure_directories,
     load_config,
     logs_dir,
+    run_dir,
     runtime_dir,
     save_config,
 )
@@ -94,34 +97,26 @@ def available_port(preferred: int = 8081) -> int:
     raise RuntimeError("no free loopback port found between 8081 and 8100")
 
 
-def install_runtime(*, dry_run: bool = False) -> list[list[str]]:
-    requirement = f"git+{RUNTIME_REPO}@{RUNTIME_REVISION}"
-    uv = shutil.which("uv")
+def install_runtime(
+    *, dry_run: bool = False, progress: Callable[[dict], None] | None = None
+) -> list[list[str]]:
     environment = runtime_dir()
     runtime_python = environment / "bin" / "python"
-    if uv:
-        create = [uv, "venv", "--python", sys.executable, str(environment)]
-        command = [
-            uv,
-            "pip",
-            "install",
-            "--python",
-            str(runtime_python),
-            requirement,
-            "huggingface-hub>=0.34,<2",
-        ]
-    else:
-        create = [sys.executable, "-m", "venv", str(environment)]
-        command = [
-            str(runtime_python),
-            "-m",
-            "pip",
-            "install",
-            requirement,
-            "huggingface-hub>=0.34,<2",
-        ]
+    wheel = cache_dir() / "downloads" / Path(RUNTIME_WHEEL_URL).name
+    create = [sys.executable, "-m", "venv", str(environment)]
+    command = [
+        str(runtime_python),
+        "-m",
+        "pip",
+        "install",
+        "--only-binary=:all:",
+        "--no-compile",
+        str(wheel),
+        "huggingface-hub>=0.34,<2",
+    ]
     if not dry_run:
         ensure_directories()
+        _download_verified(RUNTIME_WHEEL_URL, wheel, RUNTIME_WHEEL_SHA256, progress=progress)
         subprocess.run(create, check=True)
         subprocess.run(command, check=True)
         if not runtime_executable("spark-mlx-server"):
@@ -130,6 +125,60 @@ def install_runtime(*, dry_run: bool = False) -> list[list[str]]:
                 f"{environment / 'bin'}"
             )
     return [create, command]
+
+
+def _download_verified(
+    url: str,
+    destination: Path,
+    expected_sha256: str,
+    *,
+    progress: Callable[[dict], None] | None = None,
+) -> Path:
+    """Resume an HTTP download, verify it, and atomically publish the file."""
+    if destination.is_file() and hashlib.sha256(destination.read_bytes()).hexdigest() == expected_sha256:
+        return destination
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_suffix(destination.suffix + ".part")
+    existing = partial.stat().st_size if partial.exists() else 0
+    request = urllib.request.Request(url)
+    if existing:
+        request.add_header("Range", f"bytes={existing}-")
+    started = time.monotonic()
+    with urllib.request.urlopen(request, timeout=60) as response:
+        if existing and getattr(response, "status", None) != 206:
+            partial.unlink(missing_ok=True)
+            existing = 0
+        total_header = response.headers.get("Content-Length")
+        total = existing + int(total_header) if total_header else None
+        downloaded = existing
+        with partial.open("ab" if existing else "wb") as handle:
+            while chunk := response.read(1024 * 1024):
+                handle.write(chunk)
+                downloaded += len(chunk)
+                if progress:
+                    elapsed = max(0.001, time.monotonic() - started)
+                    speed = (downloaded - existing) / elapsed
+                    progress(
+                        {
+                            "state": "updated",
+                            "phase": "download",
+                            "label": destination.name,
+                            "bytes": downloaded,
+                            "total_bytes": total,
+                            "progress": downloaded,
+                            "total": total or max(downloaded, 1),
+                            "bytes_per_second": round(speed),
+                            "eta_seconds": round((total - downloaded) / speed)
+                            if total and speed
+                            else None,
+                        }
+                    )
+    digest = hashlib.sha256(partial.read_bytes()).hexdigest()
+    if digest != expected_sha256:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError(f"download checksum mismatch for {destination.name}")
+    partial.replace(destination)
+    return destination
 
 
 def download_model(*, dry_run: bool = False) -> Path:
@@ -194,7 +243,13 @@ def launch_agent_path() -> Path:
 
 
 def render_launch_agent(config: Config) -> str:
-    arguments = "\n".join(f"      <string>{value}</string>" for value in server_command(config))
+    native = shutil.which("fresnel-supervisor")
+    program = (native,) if native else (
+        str(Path(sys.executable).parent / "fresnel"),
+        "internal-supervisor",
+    )
+    arguments = "\n".join(f"      <string>{value}</string>" for value in program)
+    socket = str(run_dir() / "control.sock")
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -202,8 +257,12 @@ def render_launch_agent(config: Config) -> str:
   <key>ProgramArguments</key><array>
 {arguments}
   </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Adaptive</string>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>Sockets</key><dict><key>Control</key><dict>
+    <key>SockPathName</key><string>{socket}</string>
+    <key>SockPathMode</key><integer>384</integer>
+  </dict></dict>
   <key>StandardOutPath</key><string>{logs_dir() / "worker.log"}</string>
   <key>StandardErrorPath</key><string>{logs_dir() / "worker-error.log"}</string>
 </dict></plist>
@@ -336,7 +395,9 @@ def guided_setup(
                 "eta_seconds": 45,
             }
         )
-        actions.append({"runtime_command": install_runtime(dry_run=dry_run)})
+        actions.append(
+            {"runtime_command": install_runtime(dry_run=dry_run, progress=progress)}
+        )
     progress(
         {
             "state": "updated",
@@ -382,7 +443,26 @@ def guided_setup(
     if not skip_benchmark and not dry_run and not server_healthy(config.host, config.port):
         log_path = logs_dir() / "setup-worker.log"
         log = log_path.open("a")
-        worker = subprocess.Popen(server_command(config), stdout=log, stderr=subprocess.STDOUT)
+        worker_environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key
+            in {
+                "PATH",
+                "HOME",
+                "TMPDIR",
+                "LANG",
+                "LC_ALL",
+                "MLX_METAL_CACHE_DIR",
+                "PYTHONUNBUFFERED",
+            }
+        }
+        worker = subprocess.Popen(
+            server_command(config),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=worker_environment,
+        )
         progress(
             {
                 "state": "updated",
@@ -447,7 +527,7 @@ def guided_setup(
         "config": config.__dict__,
         "actions": actions,
         "benchmark": benchmark_result,
-        "next": "Run `fresnel serve`, then install an adapter with `fresnel integrations install codex`.",
+        "next": "Run `fresnel onboard` to enable on-demand Spark and connect your orchestrator.",
     }
 
 

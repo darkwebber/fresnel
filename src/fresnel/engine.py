@@ -5,38 +5,46 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
-import os
 import platform
 import shutil
 import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
 
 from .approvals import decide
 from .budget import allocate
+from .capabilities import CapabilityBroker
 from .config import Config, environment_key
+from .context import ContextItem, compile_context
 from .hardware import memory_free_percent
 from .learning import classify_failure, signature
 from .memory import Memory
 from .protocol import Component, Plan, parse_plan, safe_path
 from .references import (
     exa_reference,
-    file_excerpt_reference,
     help_reference,
     pydoc_reference,
     render_packet,
 )
 from .repository import RepositoryIndex
 from .router import shadow_route
+from .sandbox import clean_environment
+from .sandbox import command as sandbox_command
 from .store import Store
-from .worker import WorkerTruncated, apply_operations, render_prompt
+from .worker import (
+    WorkerTruncated,
+    apply_operations,
+    operations_already_applied,
+    render_prompt,
+)
 from .worker import call as call_worker
 from .worker import parse as parse_worker
+from .workspace import Workspace, idempotency_key
 
 IGNORED = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"}
 COORDINATOR_SYSTEM = """You are Fresnel's planning controller. Own architecture, decomposition,
@@ -130,8 +138,13 @@ Return {{"inspect":["relative/path"]}} selecting at most 20 files needed to desi
         evidence.append(block)
         used += len(block)
     schema = {
-        "protocol_version": "1.0",
+        "protocol_version": "1.1",
         "objective": "outcome",
+        "scope": ["file.py"],
+        "acceptance": ["observable end-to-end result"],
+        "constraints": ["project-wide invariant"],
+        "interfaces": ["public interface contract"],
+        "invariants": ["cross-component invariant"],
         "contracts": [{"path": "test_contract.py", "content": "small executable contract"}],
         "components": [
             {
@@ -144,6 +157,17 @@ Return {{"inspect":["relative/path"]}} selecting at most 20 files needed to desi
                 "acceptance": ["observable result"],
                 "implementation": ["specific algorithm"],
                 "validation": [["python3", "-m", "unittest", "-v"]],
+                "risk_envelope": {
+                    "write_paths": ["file.py"],
+                    "network": "none",
+                    "installs": False,
+                    "external_writes": False,
+                },
+                "budgets": {
+                    "max_capability_calls": 8,
+                    "max_edit_attempts": 3,
+                    "wall_seconds": 300,
+                },
                 "references": {
                     "local_docs": [],
                     "help_commands": [],
@@ -204,7 +228,7 @@ def _validation(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 timeout=timeout,
-                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                env=clean_environment(root),
                 check=False,
             )
             result = {
@@ -228,17 +252,7 @@ def _validation(
 
 
 def _sandboxed_command(root: Path, command: tuple[str, ...]) -> list[str]:
-    sandbox = Path("/usr/bin/sandbox-exec")
-    if platform.system() != "Darwin" or not sandbox.is_file():
-        return list(command)
-    escaped_root = str(root.resolve()).replace("\\", "\\\\").replace('"', '\\"')
-    profile = (
-        "(version 1)(deny default)(allow process*)(allow file-read*)(allow sysctl-read)"
-        "(allow mach*)(allow ipc*)(allow signal)"
-        f'(allow file-write* (subpath "{escaped_root}") (subpath "/private/tmp") '
-        '(literal "/dev/null"))'
-    )
-    return [str(sandbox), "-p", profile, *command]
+    return sandbox_command(root, command) if platform.system() == "Darwin" else list(command)
 
 
 def _references(
@@ -341,18 +355,21 @@ def run(
     coordinator_calls: list[dict] | None = None,
     store: Store | None = None,
     progress: Callable[[dict], None] | None = None,
+    resume_run_id: str | None = None,
 ) -> dict:
     repo = repo.resolve()
     decisions = decisions or {}
     store = store or Store()
     memory = Memory(store)
-    run_id = store.new_run(request or plan.objective, config.active_worker)
+    resumed = resume_run_id is not None
+    run_id = resume_run_id or store.new_run(request or plan.objective, config.active_worker)
     progress_callback = progress or (lambda _event: None)
     progress_history: list[dict] = []
 
     def report_progress(event: dict) -> None:
         snapshot = dict(event)
         progress_history.append(snapshot)
+        store.progress_event(run_id, snapshot)
         progress_callback(snapshot)
 
     progress = report_progress
@@ -362,40 +379,63 @@ def run(
         {
             "state": "started",
             "phase": "workspace",
-            "label": "Preparing isolated workspace",
+            "label": "Restoring verified workspace" if resumed else "Preparing durable workspace",
             "run_id": run_id,
             "progress": 0,
             "total": len(plan.components),
             "eta_seconds": None,
         }
     )
-    store.event(run_id, "PLANNED", {"objective": plan.objective})
+    if not store.run(run_id):
+        raise ValueError(f"unknown run: {run_id}")
+    if resumed:
+        store.clear_cancel(run_id)
     targets = tuple(
         dict.fromkeys(path for component in plan.components for path in component.targets)
     )
     contracts = tuple(contract.path for contract in plan.contracts)
     assembled = tuple(dict.fromkeys(targets + contracts))
-    memory.create_charter(
-        run_id,
-        repo,
-        plan.objective,
-        [item for component in plan.components for item in component.acceptance],
-        [item for component in plan.components for item in component.constraints],
-        list(assembled),
+    tracked = tuple(
+        dict.fromkeys(
+            assembled
+            + tuple(path for component in plan.components for path in component.context)
+        )
     )
-    memory.event(
-        "TASK_STARTED",
-        {
-            "components": [component.id for component in plan.components],
-            "invariants": list(plan.review_checklist),
-        },
-        repo=repo,
-        run_id=run_id,
-    )
-    hashes = {path: _digest(safe_path(repo, path)) for path in assembled}
+    project_identifier, _project_root = memory.ensure_project(repo)
+    if resumed:
+        workspace = Workspace.load(store, run_id)
+        workspace.assert_source_fresh()
+        metadata = workspace.metadata()
+        if json.dumps(metadata["plan"], sort_keys=True) != json.dumps(asdict(plan), sort_keys=True):
+            raise ValueError("resume plan does not match the persisted run plan")
+        hashes = metadata["source_hashes"]
+    else:
+        store.event(run_id, "PLANNED", {"objective": plan.objective})
+        memory.create_charter(
+            run_id,
+            repo,
+            plan.objective,
+            list(plan.acceptance),
+            list(plan.constraints),
+            list(plan.scope),
+        )
+        memory.event(
+            "TASK_STARTED",
+            {
+                "components": [component.id for component in plan.components],
+                "invariants": list(plan.review_checklist + plan.invariants),
+            },
+            repo=repo,
+            run_id=run_id,
+        )
+        hashes = {path: _digest(safe_path(repo, path)) for path in assembled}
+        workspace = Workspace.create(
+            store, run_id, project_identifier, repo, plan, tracked
+        )
     profile = config.selected_profile
     project_python = _project_python(repo)
-    report = {
+    checkpoint = workspace.restore_latest() if resumed else None
+    report = checkpoint["report"] if checkpoint else {
         "protocol_version": plan.protocol_version,
         "run_id": run_id,
         "objective": plan.objective,
@@ -411,11 +451,14 @@ def run(
         "diff": "",
         "worker_model": config.model_path or config.model_repo,
     }
+    if resumed:
+        prior_progress = list(report.get("progress", []))
+        progress_history[:] = prior_progress + progress_history
+        report["progress"] = progress_history
+        report["success"] = False
+        report["status"] = "RESUMING"
     try:
-        with tempfile.TemporaryDirectory(prefix="fresnel-") as temporary:
-            work = Path(temporary) / "repo"
-            _copy_repo(repo, work)
-            project_identifier, _project_root = memory.ensure_project(repo)
+        with nullcontext(workspace.repo) as work:
             repository_index = RepositoryIndex(store, project_identifier, work)
             index_metrics = repository_index.index()
             report["memory"] = {"repository_index": index_metrics}
@@ -430,14 +473,44 @@ def run(
                     "eta_seconds": None,
                 }
             )
-            for contract in plan.contracts:
-                path = safe_path(work, contract.path)
-                if path.exists():
-                    raise ValueError(f"contract would overwrite existing file: {contract.path}")
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(contract.content)
-            exa_key = environment_key("EXA_API_KEY", "exa-api-key")
+            if not resumed:
+                for contract in plan.contracts:
+                    path = safe_path(work, contract.path)
+                    if path.exists():
+                        raise ValueError(
+                            f"contract would overwrite existing file: {contract.path}"
+                        )
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(contract.content)
+                workspace.checkpoint(
+                    None,
+                    {"phase": "prepared", "completed": []},
+                    report,
+                    assembled,
+                )
+            exa_key = (
+                environment_key("EXA_API_KEY", "exa-api-key") if config.exa_enabled else None
+            )
+            completed_components = {
+                item["id"] for item in report["components"] if item.get("success")
+            }
             for component_index, component in enumerate(plan.components, 1):
+                if component.id in completed_components:
+                    progress(
+                        {
+                            "state": "updated",
+                            "phase": "component",
+                            "label": f"Restored verified component {component.id}",
+                            "run_id": run_id,
+                            "component_id": component.id,
+                            "progress": component_index,
+                            "total": len(plan.components),
+                            "eta_seconds": None,
+                        }
+                    )
+                    continue
+                if store.cancelled(run_id):
+                    raise RuntimeError("run cancelled")
                 component_started = time.perf_counter()
                 remaining = len(plan.components) - component_index + 1
                 eta = (
@@ -464,7 +537,10 @@ def run(
                     repo=repo,
                     run_id=run_id,
                 )
-                records, packet = _references(component, work, exa_key, project_python)
+                if plan.protocol_version == "1.0":
+                    records, packet = _references(component, work, exa_key, project_python)
+                else:
+                    records, packet = [], ""
                 query = "\n".join(
                     (component.task, *component.implementation, *component.acceptance)
                 )
@@ -481,16 +557,38 @@ def run(
                     "success": False,
                     "references": records,
                     "attempts": [],
+                    "capability_calls": [],
+                    "context_manifests": [],
                 }
+                broker = CapabilityBroker(
+                    store,
+                    run_id,
+                    component,
+                    work,
+                    repository_index,
+                    python=project_python,
+                    exa_key=exa_key,
+                )
                 feedback = ""
-                for number in range(1, profile.max_attempts + 1):
+                number = 1
+                capability_count = 0
+                edit_limit = min(profile.max_attempts, component.budgets.max_edit_attempts)
+                capability_limit = min(
+                    profile.max_capability_calls, component.budgets.max_capability_calls
+                )
+                while number <= edit_limit:
+                    if time.perf_counter() - component_started > component.budgets.wall_seconds:
+                        component_result["status"] = "BUDGET_EXHAUSTED"
+                        break
+                    if store.cancelled(run_id):
+                        raise RuntimeError("run cancelled")
                     progress(
                         {
                             "state": "updated",
                             "phase": "worker",
                             "label": (
                                 f"Spark implementing {component.id} · "
-                                f"attempt {number}/{profile.max_attempts}"
+                                f"attempt {number}/{edit_limit}"
                             ),
                             "run_id": run_id,
                             "component_id": component.id,
@@ -505,8 +603,10 @@ def run(
                     ).fetchone()
                     situation = state_row["state_json"] if state_row else ""
                     playbook_rows = store.connection.execute(
-                        "SELECT trigger, rule FROM playbooks WHERE status='PROMOTED' "
-                        "ORDER BY updated_at DESC LIMIT 3"
+                        "SELECT trigger, rule FROM playbooks WHERE status='ACTIVE' "
+                        "AND (LOWER(trigger) LIKE ? OR LOWER(rule) LIKE ?) "
+                        "ORDER BY updated_at DESC LIMIT 3",
+                        (f"%{component.id.lower()}%", f"%{component.task.lower()[:40]}%"),
                     ).fetchall()
                     playbooks = "\n".join(
                         f"- IF {row['trigger']} THEN {row['rule']}" for row in playbook_rows
@@ -516,17 +616,66 @@ def run(
                         memory_free_percent=memory_free_percent(),
                         attempt=number,
                     )
+                    profile_facts = memory.profile(repo)
+                    influenced = report["memory"].setdefault("influenced_facts", [])
+                    for fact in profile_facts[:8]:
+                        if fact["id"] not in influenced:
+                            influenced.append(fact["id"])
+                    facts_text = "\n".join(
+                        f"- {item['kind']}: {item['value']['value']}"
+                        for item in profile_facts[:8]
+                    )
+                    compiled, manifest = compile_context(
+                        store,
+                        run_id,
+                        component.id,
+                        number,
+                        max(512, initial_budget.max_input_tokens // 3),
+                        [
+                            ContextItem(
+                                "working-state",
+                                situation or "fresh component",
+                                "deterministic current task state",
+                                "fresnel://task-state",
+                                10,
+                            )
+                        ],
+                        [
+                            ContextItem(
+                                "evidence",
+                                packet,
+                                "repository and reference evidence",
+                                "fresnel://evidence",
+                                6,
+                            ),
+                            ContextItem(
+                                "playbook",
+                                playbooks,
+                                "matching validated procedure",
+                                "fresnel://playbooks",
+                                5,
+                            ),
+                            ContextItem(
+                                "user-memory",
+                                facts_text,
+                                "confirmed local preferences",
+                                "fresnel://profile",
+                                4,
+                            ),
+                        ],
+                    )
+                    component_result["context_manifests"].append(manifest)
                     prompt = render_prompt(
                         component,
                         work,
-                        packet,
+                        compiled,
                         feedback,
                         goal=plan.objective,
                         max_input_tokens=initial_budget.max_input_tokens,
                         response_budget=initial_budget.max_output_tokens,
                         attempt=number,
-                        situation=situation,
-                        playbooks=playbooks,
+                        situation="",
+                        playbooks="",
                     )
                     estimated_tokens = (len(prompt) + 3) // 4
                     budget = allocate(
@@ -544,6 +693,12 @@ def run(
                     output = ""
                     usage = {}
                     try:
+                        memory.event(
+                            "WORKER_CALL_STARTED",
+                            {"component_id": component.id, "attempt": number},
+                            repo=repo,
+                            run_id=run_id,
+                        )
                         output, usage = call_worker(
                             f"http://{config.host}:{config.port}/v1/chat/completions",
                             config.model_path or config.model_repo,
@@ -566,6 +721,17 @@ def run(
                         }
                         fallback = component.targets[0] if len(component.targets) == 1 else None
                         kind, payload = parse_worker(output, fallback_target=fallback)
+                        memory.event(
+                            "WORKER_CALL_COMPLETED",
+                            {
+                                "component_id": component.id,
+                                "attempt": number,
+                                "output_blob": output_blob,
+                                "operation_kind": kind,
+                            },
+                            repo=repo,
+                            run_id=run_id,
+                        )
                         progress(
                             {
                                 "state": "updated",
@@ -641,13 +807,20 @@ def run(
                                 f"Previous response was unusable: {details}. "
                                 "Return valid bounded operations only."
                             )
+                        number += 1
                         continue
-                    if kind in {"reference", "action"}:
+                    if store.cancelled(run_id):
+                        raise RuntimeError("run cancelled")
+                    if kind in {"capability", "reference", "action"}:
+                        if kind == "reference":
+                            payload["capability"] = payload.get("kind")
                         approval = decide(
                             component.id,
                             payload,
                             decisions,
-                            web_authorized=component.references.allow_worker_web,
+                            web_authorized=(
+                                component.risk.network == "reference-only" and bool(exa_key)
+                            ),
                         )
                         attempt["approval"] = approval
                         component_result["attempts"].append(attempt)
@@ -672,39 +845,92 @@ def run(
                                 f"Action denied: {approval['reason']}. Use an in-scope alternative."
                             )
                             continue
-                        if payload["kind"] == "local_docs":
-                            reference = pydoc_reference(
-                                str(payload["query"]), python=project_python
-                            )
-                        elif payload["kind"] == "help_command":
-                            reference = help_reference(list(payload["argv"]), work)
-                        elif payload["kind"] == "file_excerpt":
-                            reference = file_excerpt_reference(
-                                work,
-                                payload,
-                                set(component.targets + component.context),
-                            )
-                        elif payload["kind"] == "exa":
-                            if not exa_key:
-                                raise RuntimeError("approved Exa request has no configured key")
-                            reference = exa_reference(
-                                str(payload["query"]),
-                                exa_key,
-                                list(payload.get("include_domains", [])),
-                            )
-                        else:
+                        if kind == "action" and "capability" not in payload:
                             feedback = "Action approved by policy; use only the existing bounded operations."
                             continue
-                        records.append(reference)
-                        packet = render_packet(records)
+                        if capability_count >= capability_limit:
+                            feedback = "Capability budget exhausted; finish from verified evidence or report a blocker."
+                            number += 1
+                            continue
+                        capability_count += 1
+                        memory.event(
+                            "CAPABILITY_STARTED",
+                            {"component_id": component.id, "request": payload},
+                            repo=repo,
+                            run_id=run_id,
+                        )
+                        capability = broker.resolve(payload)
+                        memory.event(
+                            "CAPABILITY_COMPLETED",
+                            {
+                                "component_id": component.id,
+                                "capability_id": capability["id"],
+                                "source_hash": capability["source_hash"],
+                            },
+                            repo=repo,
+                            run_id=run_id,
+                        )
+                        component_result["capability_calls"].append(capability)
+                        packet = "\n\n".join(
+                            part
+                            for part in (
+                                packet,
+                                (
+                                    f"CAPABILITY {capability['capability']} "
+                                    f"source={capability['source']} "
+                                    f"hash={capability['source_hash'][:12]}\n"
+                                    f"{capability['content']}"
+                                ),
+                            )
+                            if part
+                        )
                         continue
                     try:
-                        apply_operations(
-                            work,
-                            set(component.targets),
-                            payload,
-                            replace_existing_create=True,
+                        operation_key = idempotency_key(
+                            run_id,
+                            "edit",
+                            {
+                                "component": component.id,
+                                "attempt": number,
+                                "operations": payload,
+                            },
                         )
+                        prior_operation = store.idempotency_result(operation_key)
+                        if prior_operation is None:
+                            interrupted_operation = store.idempotency_state(operation_key) == "STARTED"
+                            store.idempotency_start(
+                                operation_key,
+                                run_id,
+                                "edit",
+                                {"component": component.id, "operations": payload},
+                            )
+                            memory.event(
+                                "EDIT_STARTED",
+                                {
+                                    "component_id": component.id,
+                                    "idempotency_key": operation_key,
+                                },
+                                repo=repo,
+                                run_id=run_id,
+                            )
+                            if interrupted_operation and operations_already_applied(
+                                work, set(component.targets), payload
+                            ):
+                                changed_paths = sorted(
+                                    {operation["path"] for operation in payload}
+                                )
+                            else:
+                                changed_paths = apply_operations(
+                                    work,
+                                    set(component.targets),
+                                    payload,
+                                    replace_existing_create=True,
+                                )
+                            store.idempotency_finish(
+                                operation_key, {"paths": changed_paths}
+                            )
+                        else:
+                            changed_paths = prior_operation.get("paths", [])
                     except (ValueError, OSError) as exc:
                         details = f"{type(exc).__name__}: {exc}"
                         category = classify_failure(details)
@@ -722,10 +948,15 @@ def run(
                             f"Operation rejected: {details}. Existing targets require EDIT with "
                             "one unique exact SEARCH block; missing targets require CREATE."
                         )
+                        number += 1
                         continue
                     memory.event(
                         "EDIT_APPLIED",
-                        {"component_id": component.id, "paths": list(component.targets)},
+                        {
+                            "component_id": component.id,
+                            "paths": changed_paths,
+                            "idempotency_key": operation_key,
+                        },
                         repo=repo,
                         run_id=run_id,
                     )
@@ -741,10 +972,21 @@ def run(
                             "eta_seconds": eta,
                         }
                     )
+                    memory.event(
+                        "VALIDATION_STARTED",
+                        {"component_id": component.id, "commands": component.validation},
+                        repo=repo,
+                        run_id=run_id,
+                    )
                     passed, validation = _validation(
                         work, component.validation, python=project_python
                     )
                     attempt.update({"passed": passed, "validation": validation})
+                    manifest["usefulness"] = 1.0 if passed else 0.25
+                    manifest["outcome"] = "validation_passed" if passed else "validation_failed"
+                    store.context_feedback(
+                        manifest["id"], manifest["usefulness"], manifest["outcome"]
+                    )
                     attempt["budget"] = asdict(budget)
                     component_result["attempts"].append(attempt)
                     store.record_call(run_id, component.id, usage, attempt["seconds"], passed)
@@ -791,6 +1033,16 @@ def run(
                                 "eta_seconds": eta_after,
                             }
                         )
+                        state_row = store.connection.execute(
+                            "SELECT state_json FROM task_state WHERE run_id=?", (run_id,)
+                        ).fetchone()
+                        checkpoint_id = workspace.checkpoint(
+                            component.id,
+                            json.loads(state_row["state_json"]) if state_row else {},
+                            report | {"components": [*report["components"], component_result]},
+                            assembled,
+                        )
+                        component_result["checkpoint_id"] = checkpoint_id
                         break
                     feedback = (
                         "Repair only the failing behavior.\n"
@@ -806,10 +1058,13 @@ def run(
                         category,
                         {"attempt": number, "validation": validation},
                     )
+                    number += 1
                 report["components"].append(component_result)
                 if not component_result["success"]:
                     break
             else:
+                if store.cancelled(run_id):
+                    raise RuntimeError("run cancelled")
                 store.event(run_id, "INTEGRATING", {})
                 progress(
                     {
@@ -825,33 +1080,62 @@ def run(
                 report["success"], report["integration_validation"] = _validation(
                     work, plan.integration_validation, python=project_python
                 )
+                memory.event(
+                    "INTEGRATION_VALIDATED",
+                    {"passed": report["success"]},
+                    repo=repo,
+                    run_id=run_id,
+                )
             report["diff"] = _diff(repo, work, assembled)
             if report["success"] and apply:
+                workspace.assert_source_fresh()
+                memory.event(
+                    "APPLY_STARTED",
+                    {"paths": list(assembled)},
+                    repo=repo,
+                    run_id=run_id,
+                )
                 for relative in assembled:
                     if _digest(safe_path(repo, relative)) != hashes[relative]:
                         raise RuntimeError(f"concurrent change detected: {relative}")
                 for relative in assembled:
                     source, destination = safe_path(work, relative), safe_path(repo, relative)
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    destination.write_bytes(source.read_bytes())
+                    temporary = destination.with_name(f".{destination.name}.fresnel-tmp")
+                    temporary.write_bytes(source.read_bytes())
+                    temporary.replace(destination)
                 report["applied"] = True
+                memory.event(
+                    "APPLY_COMPLETED",
+                    {"paths": list(assembled)},
+                    repo=repo,
+                    run_id=run_id,
+                )
         report["metrics"] = _metrics(report, config)
         status = (
             "READY_TO_APPLY"
             if report["success"] and not apply
             else "APPLIED"
-            if apply
+            if report["success"] and apply
             else "COMPONENT_FAILED"
         )
         if report["notifications"]:
             status = "AWAITING_APPROVAL"
         report["status"] = status
+        event_kind = (
+            "INTERRUPTED"
+            if status == "AWAITING_APPROVAL"
+            else "RUN_COMPLETED"
+            if report["success"]
+            else "RUN_FAILED"
+        )
         memory.event(
-            "RUN_COMPLETED" if report["success"] else "RUN_FAILED",
+            event_kind,
             {"status": status, "summary": status.lower().replace("_", " ")},
             repo=repo,
             run_id=run_id,
         )
+        workspace.mark(status)
         progress(
             {
                 "state": "completed" if report["success"] else "failed",
@@ -867,13 +1151,25 @@ def run(
         )
         store.finish(run_id, status, report)
         return report
+    except KeyboardInterrupt:
+        report["status"] = "INTERRUPTED"
+        report["success"] = False
+        memory.event(
+            "INTERRUPTED",
+            {"status": "INTERRUPTED", "summary": "interrupted by user; safe to resume"},
+            repo=repo,
+            run_id=run_id,
+        )
+        workspace.mark("INTERRUPTED")
+        store.finish(run_id, "INTERRUPTED", report)
+        raise
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
         report["metrics"] = _metrics(report, config)
-        report["status"] = "FAILED"
+        report["status"] = "CANCELLED" if str(exc) == "run cancelled" else "FAILED"
         memory.event(
             "RUN_FAILED",
-            {"status": "FAILED", "summary": report["error"]},
+            {"status": report["status"], "summary": report["error"]},
             repo=repo,
             run_id=run_id,
         )
@@ -890,5 +1186,6 @@ def run(
                 "error": report["error"],
             }
         )
-        store.finish(run_id, "FAILED", report)
+        workspace.mark(report["status"])
+        store.finish(run_id, report["status"], report)
         return report

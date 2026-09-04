@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fresnel-agent"
-version = "0.4.2"
+version = "0.5.0"
 description = "Mac-native orchestration harness for bounded local coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,7 +34,7 @@ packages = ["src/fresnel"]
 "integrations/fresnel" = "fresnel/_bundled_skill"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/fresnel", "integrations", "scripts", "README.md", "LICENSE"]
+include = ["src/fresnel", "integrations", "native", "scripts", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

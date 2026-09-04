@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import load_config, save_config
 from .integrations import install as install_integration
+from .memory import Memory
 from .setup import doctor, install_service, server_healthy
 
 PRODUCTS = (
@@ -64,6 +65,7 @@ def run_onboarding(
     product: str | None = None,
     project: Path | None = None,
     service: bool | None = None,
+    personalization: bool | None = None,
     assume_yes: bool = False,
     input_fn: Callable[[str], str] = input,
     output: Callable[[str], None] = print,
@@ -103,12 +105,12 @@ def run_onboarding(
         output("\nRun `fresnel doctor --fix --yes`, then return with `fresnel onboard`.")
         return {"completed": False, "problems": status["problems"]}
 
-    output("\nFresnel needs two final choices: how the worker runs and which")
-    output("coding orchestrator should receive the Fresnel delegation contract.\n")
+    output("\nFresnel needs three final choices: worker lifecycle, orchestrator,")
+    output("and whether repeated work patterns may become local preferences.\n")
 
     if service is None:
         service = True if assume_yes else _yes_no(
-            "Start the local worker automatically when you sign in?",
+            "Enable the on-demand worker (loads only while Fresnel is active)?",
             default=True,
             input_fn=input_fn,
             output=output,
@@ -133,6 +135,22 @@ def run_onboarding(
     if product not in valid_products:
         raise ValueError(f"unknown orchestrator: {product}")
 
+    if personalization is None:
+        personalization = False if assume_yes or not sys.stdin.isatty() else _yes_no(
+            "Learn repeated non-sensitive preferences locally?",
+            default=False,
+            input_fn=input_fn,
+            output=output,
+        )
+    if config.personalization_enabled != personalization:
+        memory_store = Memory()
+        try:
+            memory_store.set_personalization(personalization)
+        finally:
+            memory_store.close()
+    config.personalization_enabled = personalization
+    save_config(config)
+
     changes = []
     if product != "skip":
         if product != "codex" and project is None:
@@ -144,7 +162,10 @@ def run_onboarding(
     output("\n" + _paint("Ready.", "1;32", color))
     output("  The orchestrator plans and reviews. Spark implements bounded components.")
     if service:
-        output("  Worker: starts at login" + (" and is responding now." if live else "."))
+        output(
+            "  Worker: starts on demand and unloads when idle"
+            + ("; it is warm now." if live else ".")
+        )
     else:
         output("  Worker: run `fresnel serve` in a separate terminal before delegating.")
     if product == "codex":
@@ -157,6 +178,10 @@ def run_onboarding(
     output(_paint('  “Use Fresnel to implement a small, well-tested change in this project.”', "36", color))
     output("\nTry the worker:  fresnel ask \"Explain a small PySpark transformation\"")
     output("Useful checks:    fresnel doctor --json   ·   fresnel status")
+    output(
+        "  Memory: "
+        + ("local preference learning enabled." if personalization else "explicit facts only.")
+    )
 
     return {
         "completed": True,
@@ -164,5 +189,6 @@ def run_onboarding(
         "project": str(project.resolve()) if project else None,
         "service": str(service_path) if service_path else ("enabled" if config.start_at_login else None),
         "server_healthy": live,
+        "personalization_enabled": personalization,
         "integration_changes": changes,
     }

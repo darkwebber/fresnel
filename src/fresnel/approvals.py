@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-POLICY_VERSION = "v1"
+POLICY_VERSION = "v1.1"
 
 
 def request_id(component: str, request: dict[str, Any]) -> str:
@@ -19,6 +19,11 @@ def request_id(component: str, request: dict[str, Any]) -> str:
 
 def classify(request: dict[str, Any], *, web_authorized: bool = False) -> tuple[str, str]:
     kind = request.get("kind")
+    kind = request.get("capability", kind)
+    if kind in {"discover", "repository_map", "symbol_search", "environment"}:
+        return "approve", "bounded local capability discovery"
+    if kind == "test_execution":
+        return "approve", "declared validation in the isolated workspace"
     if kind in {"local_docs", "file_excerpt"}:
         return "approve", "local read-only documentation"
     if kind == "exa":
@@ -34,7 +39,7 @@ def classify(request: dict[str, Any], *, web_authorized: bool = False) -> tuple[
         argv = request.get("argv") or []
         executable = Path(str(argv[0])).name if argv else ""
         if executable in {"rg", "grep", "ls", "pwd", "head", "tail", "wc"}:
-            return "approve", "read-only diagnostic in disposable workspace"
+            return "approve", "read-only diagnostic in the confined durable workspace"
         if executable == "git" and len(argv) > 1 and argv[1] in {"diff", "status", "log", "show"}:
             return "approve", "read-only git inspection"
         return "escalate", "unplanned command may execute code or change state"
@@ -71,7 +76,7 @@ def decide(
     else:
         decision = policy_decision
     return {
-        "protocol_version": "1.0",
+        "protocol_version": "1.1",
         "id": identifier,
         "component_id": component,
         "decision": decision,

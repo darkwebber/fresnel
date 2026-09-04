@@ -27,6 +27,11 @@ class BenchmarkProgress:
         if selected not in {"auto", "json", "none"}:
             raise ValueError("progress mode must be auto, json, or none")
         self.json = selected == "json"
+        self.linear = bool(
+            os.environ.get("FRESNEL_SCREEN_READER")
+            or os.environ.get("FRESNEL_REDUCE_MOTION")
+            or os.environ.get("CI")
+        )
         self.enabled = (
             selected != "none"
             and (self.json or (self.stream.isatty() if enabled is None else enabled))
@@ -36,6 +41,7 @@ class BenchmarkProgress:
         self._label = ""
         self._started = 0.0
         self._width = 0
+        self._last_linear_label = ""
 
     def __call__(self, event: dict) -> None:
         if not self.enabled:
@@ -46,6 +52,14 @@ class BenchmarkProgress:
             self.stream.flush()
             return
         state = event["state"]
+        if self.linear:
+            label = self._display_label(event)
+            if label != self._last_linear_label or state in {"completed", "failed", "finished"}:
+                marker = "✓" if state in {"completed", "finished"} else "✗" if state == "failed" else "•"
+                self.stream.write(f"{marker} {label}\n")
+                self.stream.flush()
+                self._last_linear_label = label
+            return
         if state == "started":
             self._start(self._display_label(event))
         elif state == "updated":
@@ -63,6 +77,16 @@ class BenchmarkProgress:
     @staticmethod
     def _display_label(event: dict) -> str:
         label = str(event["label"])
+        current = event.get("progress")
+        total = event.get("total")
+        if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total:
+            if event.get("phase") == "download":
+                label += f" · {current / 1024**2:.1f}/{total / 1024**2:.1f} MB"
+            else:
+                label += f" · {current:g}/{total:g}"
+        free = event.get("memory_free_percent")
+        if free is not None:
+            label += f" · memory {free}%"
         eta = event.get("eta_seconds", "absent")
         if eta is None:
             return label + " · ETA estimating"

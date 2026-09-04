@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -11,17 +12,25 @@ from pathlib import Path
 from typing import Any
 
 from .protocol import safe_path
+from .sandbox import clean_environment
+from .sandbox import command as sandbox_command
 
 
 def pydoc_reference(symbol: str, python: str | None = None, timeout: int = 20) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", symbol):
+        raise ValueError("pydoc symbol must be a dotted Python identifier")
     python = python or sys.executable
+    root = Path("/private/tmp/fresnel-docs")
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
     started = time.perf_counter()
     completed = subprocess.run(
-        [python, "-m", "pydoc", symbol],
+        sandbox_command(root, (python, "-m", "pydoc", symbol)),
+        cwd=root,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         timeout=timeout,
+        env=clean_environment(root),
         check=False,
     )
     return {
@@ -40,12 +49,13 @@ def help_reference(argv: list[str], cwd: Path, timeout: int = 20) -> dict[str, A
         raise ValueError("executable code flags are forbidden in help commands")
     started = time.perf_counter()
     completed = subprocess.run(
-        argv,
+        sandbox_command(cwd, tuple(argv)),
         cwd=cwd,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         timeout=timeout,
+        env=clean_environment(cwd),
         check=False,
     )
     return {

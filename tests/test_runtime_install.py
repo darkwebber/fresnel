@@ -4,15 +4,19 @@ from pathlib import Path
 from fresnel import setup
 
 
-def test_runtime_install_uses_uv_for_stable_runtime_environment(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        setup.shutil, "which", lambda name: "/opt/homebrew/bin/uv" if name == "uv" else None
-    )
+def test_runtime_install_uses_prebuilt_wheel_for_stable_runtime_environment(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(setup, "runtime_dir", lambda: tmp_path / "runtime")
+    monkeypatch.setattr(setup, "cache_dir", lambda: tmp_path / "cache")
     commands = setup.install_runtime(dry_run=True)
-    assert commands[0][:3] == ["/opt/homebrew/bin/uv", "venv", "--python"]
+    assert commands[0][1:3] == ["-m", "venv"]
     assert sys.executable in commands[0]
-    assert setup.RUNTIME_REVISION in commands[1][-2]
+    assert commands[1][1:4] == ["-m", "pip", "install"]
+    assert any(
+        value.endswith("spark_mlx_llm-0.1.0-py3-none-any.whl") for value in commands[1]
+    )
+    assert "--only-binary=:all:" in commands[1]
 
 
 def test_runtime_executable_prefers_private_homebrew_environment(tmp_path, monkeypatch):

@@ -2,8 +2,8 @@
 
 Fresnel is a Mac-native orchestration harness that lets strong coordinators such
 as Codex, Cursor, or OpenCode delegate bounded coding components to a local
-Spark 2.5 MLX worker. It owns contracts, references, approvals, disposable
-workspaces, validation, assembly, and cost/quality metrics.
+Spark 2.5 MLX worker. It owns contracts, references, approvals, durable
+workspaces, validation, assembly, recovery, and cost/quality metrics.
 
 ## Homebrew install
 
@@ -114,12 +114,13 @@ mode until benchmark evidence supports activation.
 
 ## Small-model context management
 
-The coordinator owns the durable goal and plan. Every worker retry restates the
-overall goal, bounded task, constraints, acceptance checks, and implementation
-contract. Fresnel reads declared files from its disposable on-disk workspace,
-fits compact head/tail excerpts into a pressure-aware input budget, and lets the
-worker request a specific 1–400 line excerpt when omitted code is needed. Local
-excerpt requests are auto-approved; undeclared paths and path escapes are
+The coordinator owns the durable goal and plan. Every worker retry receives a
+small execution kernel, immutable component contract, compact current state, and
+only the most useful fresh evidence that fits the pressure-aware input budget.
+Fresnel restores hash-verified checkpoints in a durable workspace. Spark lazily
+discovers repository search, bounded excerpts, local docs, safe help, validation,
+environment inspection, and authorized Exa research. Local reads are
+auto-approved; undeclared paths, network access, secrets, and path escapes are
 rejected.
 
 Worker output that ends with `finish_reason=length` is never parsed or applied.
@@ -164,12 +165,23 @@ worker input/output/cached tokens, attempts, latency, validation outcomes,
 approval events, and failure signatures in SQLite. Configure pricing with
 `fresnel config pricing --input USD_PER_MILLION --output USD_PER_MILLION`.
 `fresnel learn` proposes a harness change only after the same normalized failure
-appears at least three times across two runs. Proposals are never activated
-automatically; the included promotion gates require regression and cost checks.
+appears at least three times across two runs. Reversible prompt, retrieval, and
+playbook candidates may be promoted only from shadow evidence whose regressions
+pass, new failures are zero, permission risk is unchanged, and token and latency
+increases are each at most 15%. Prior rules remain available for instant rollback;
+policy, code, sandbox, and permission changes remain manual.
 
 The 8-bit worker currently has strengths declared for bounded Python edits,
 simple file creation, and mechanical repairs. Multi-model routing remains shadow
-only in v0.1, making future model additions observable before they affect work.
+only in v0.5, making future model additions observable before they affect work.
+
+Resume and observe a durable run without replaying generated prose:
+
+```bash
+fresnel run --resume RUN_ID
+fresnel status --run RUN_ID --follow
+fresnel cancel RUN_ID
+```
 
 The included three-task standard suite can be rerun with
 `scripts/run-standard-benchmark.sh /path/to/harness_eval`. The measured v0.1

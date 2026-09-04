@@ -191,8 +191,22 @@ def generate_response(
         for transport_attempt in range(3):
             segment_parts: list[str] = []
 
-            def collect(delta: str, parts: list[str] = segment_parts) -> None:
+            def collect(
+                delta: str,
+                parts: list[str] = segment_parts,
+                segment_number: int = segment_offset + index,
+            ) -> None:
                 parts.append(delta)
+                if session and memory:
+                    memory.add_response_segment(
+                        session["id"],
+                        turn_id,
+                        segment_number,
+                        "assistant",
+                        "".join(parts),
+                        "streaming",
+                        {},
+                    )
                 if on_text:
                     on_text(delta)
 

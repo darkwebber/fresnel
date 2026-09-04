@@ -17,13 +17,17 @@ TOOLS = [
         "Ask the configured coordinator to produce a versioned Fresnel plan",
         ["repo", "request"],
     ),
-    ("fresnel_run", "Run a reviewed plan in a disposable workspace", ["repo", "plan"]),
+    ("fresnel_run", "Run a reviewed plan in a durable, recoverable workspace", ["repo", "plan"]),
+    ("fresnel_resume", "Resume a task from its last verified checkpoint", ["run_id"]),
+    ("fresnel_cancel", "Request checkpointed cancellation of a running task", ["run_id"]),
     ("fresnel_status", "Read recent Fresnel run state", []),
     ("fresnel_approve", "Record a user approval decision", ["request_id", "decision"]),
     ("fresnel_review", "Read a Fresnel review packet", ["path"]),
     ("fresnel_apply", "Run and apply a validated plan", ["repo", "plan"]),
     ("fresnel_benchmark", "Run Mac-aware worker calibration", []),
     ("fresnel_contract", "Read the current versioned orchestrator contract", []),
+    ("fresnel_capabilities", "Discover local worker capabilities for an intent", ["intent"]),
+    ("fresnel_memory_profile", "Read local user and project memory", ["repo"]),
 ]
 
 
@@ -31,6 +35,13 @@ def definitions() -> list[dict[str, Any]]:
     result = []
     for name, description, required in TOOLS:
         properties = {field: {"type": "string"} for field in required}
+        if name == "fresnel_status":
+            properties.update(
+                {
+                    "run_id": {"type": "string"},
+                    "follow": {"type": "boolean", "default": False},
+                }
+            )
         if name == "fresnel_approve":
             properties["decision"] = {"type": "string", "enum": ["approve", "deny"]}
         result.append(
@@ -49,8 +60,17 @@ def command(name: str, arguments: dict[str, Any]) -> list[str]:
     if name in {"fresnel_run", "fresnel_apply"}:
         result = ["fresnel", "run", "--repo", arguments["repo"], "--plan", arguments["plan"]]
         return result + (["--apply"] if name == "fresnel_apply" else [])
+    if name == "fresnel_resume":
+        return ["fresnel", "run", "--resume", arguments["run_id"]]
+    if name == "fresnel_cancel":
+        return ["fresnel", "cancel", arguments["run_id"]]
     if name == "fresnel_status":
-        return ["fresnel", "status", "--json"]
+        result = ["fresnel", "status", "--json"]
+        if arguments.get("run_id"):
+            result.extend(["--run", arguments["run_id"]])
+        if arguments.get("follow"):
+            result.append("--follow")
+        return result
     if name == "fresnel_approve":
         return ["fresnel", "approve", arguments["request_id"], arguments["decision"]]
     if name == "fresnel_review":
@@ -59,6 +79,10 @@ def command(name: str, arguments: dict[str, Any]) -> list[str]:
         return ["fresnel", "benchmark", "--json"]
     if name == "fresnel_contract":
         return ["fresnel", "contract", "--format", "json"]
+    if name == "fresnel_capabilities":
+        return ["fresnel", "capabilities", arguments["intent"]]
+    if name == "fresnel_memory_profile":
+        return ["fresnel", "memory", "profile", "--repo", arguments["repo"]]
     raise ValueError(f"unknown MCP tool: {name}")
 
 
@@ -131,12 +155,11 @@ def execute_tool(command_line: list[str], progress_token: Any = None) -> tuple[s
 
 
 def serve() -> None:
-    if sys.stdin.isatty() or sys.stderr.isatty():
-        print(
-            "✓ Fresnel MCP ready · waiting for Cursor JSON-RPC requests on stdin · Ctrl-C to stop",
-            file=sys.stderr,
-            flush=True,
-        )
+    print(
+        "Fresnel MCP ready · waiting for orchestrator requests",
+        file=sys.stderr,
+        flush=True,
+    )
     for line in sys.stdin:
         request: dict[str, Any] | None = None
         try:
