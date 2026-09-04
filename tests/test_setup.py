@@ -4,7 +4,8 @@ from fresnel import setup
 from fresnel.config import Config
 
 
-def test_available_port_and_server_command(tmp_path):
+def test_available_port_and_server_command(tmp_path, monkeypatch):
+    monkeypatch.setattr(setup, "runtime_executable", lambda _name: "spark-mlx-server")
     port = setup.available_port(18081)
     assert port >= 18081
     command = setup.server_command(Config(model_path=str(tmp_path)))

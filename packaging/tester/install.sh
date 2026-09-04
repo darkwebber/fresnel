@@ -16,12 +16,12 @@ if ! command -v brew >/dev/null 2>&1; then
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-  brew install uv
+  brew install --yes uv
 fi
 
 cd "$SCRIPT_DIR"
 shasum -a 256 -c SHA256SUMS
-uv tool install --force ./fresnel_agent-0.1.0-py3-none-any.whl
+uv tool install --force ./fresnel_agent-0.1.1-py3-none-any.whl
 
 if ! command -v fresnel >/dev/null 2>&1; then
   echo "Fresnel was installed, but its bin directory is not on PATH." >&2

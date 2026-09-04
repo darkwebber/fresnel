@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from .integrations import install as install_integration
 from .integrations import uninstall as uninstall_integration
 from .learning import propose
 from .mcp_server import serve as serve_mcp
+from .onboarding import run_onboarding
 from .protocol import parse_plan
 from .release import homebrew_formula
 from .router import shadow_route
@@ -46,8 +48,23 @@ def cmd_setup(args) -> int:
         quick_benchmark=args.quick,
         with_service=args.service,
     )
-    emit(result)
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if interactive and not args.yes and not args.dry_run and not args.no_onboard:
+        result["onboarding"] = run_onboarding()
+        return 0 if result["onboarding"]["completed"] else 1
+    else:
+        emit(result)
     return 0
+
+
+def cmd_onboard(args) -> int:
+    result = run_onboarding(
+        product=args.product,
+        project=args.project.resolve() if args.project else None,
+        service=args.service,
+        assume_yes=args.yes,
+    )
+    return 0 if result["completed"] else 1
 
 
 def cmd_doctor(args) -> int:
@@ -276,7 +293,17 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--skip-benchmark", action="store_true")
     setup.add_argument("--quick", action="store_true")
     setup.add_argument("--service", action="store_true")
+    setup.add_argument("--no-onboard", action="store_true")
     setup.set_defaults(handler=cmd_setup)
+
+    onboard = commands.add_parser("onboard", help="finish setup with an interactive walkthrough")
+    onboard.add_argument("--product", choices=("codex", "cursor", "opencode", "generic", "skip"))
+    onboard.add_argument("--project", type=Path)
+    onboard.add_argument("--yes", action="store_true")
+    service_choice = onboard.add_mutually_exclusive_group()
+    service_choice.add_argument("--service", dest="service", action="store_true")
+    service_choice.add_argument("--no-service", dest="service", action="store_false")
+    onboard.set_defaults(handler=cmd_onboard, service=None)
 
     doctor_parser = commands.add_parser("doctor", help="diagnose installation")
     doctor_parser.add_argument("--json", action="store_true")

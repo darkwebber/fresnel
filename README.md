@@ -9,11 +9,19 @@ workspaces, validation, assembly, and cost/quality metrics.
 
 ```bash
 brew install --yes darkwebber/tap/fresnel
-fresnel setup --yes
+fresnel setup
 ```
 
 The explicit `--yes` avoids Homebrew 6's default confirmation prompt in
-embedded terminals. It does not disable tap-trust checks.
+embedded terminals. It does not disable tap-trust checks. Interactive setup
+finishes with a terminal walkthrough that configures the background worker and
+your Codex, Cursor, OpenCode, or generic integration.
+
+Already ran setup and are wondering what comes next? Run:
+
+```bash
+fresnel onboard
+```
 
 ## Development install
 

@@ -1,4 +1,4 @@
-FRESNEL 0.1.0 — APPLE SILICON TESTER BUILD
+FRESNEL 0.1.1 — APPLE SILICON TESTER BUILD
 
 Requirements
 ------------
@@ -20,7 +20,8 @@ Install
 The script verifies the included wheel, installs Fresnel in an isolated uv tool
 environment, and launches guided setup. Setup downloads the revision-pinned
 Spark-X2.5-4B MLX 8-bit model (approximately 4.1 GB) from Hugging Face and runs
-an adaptive hardware calibration.
+an adaptive hardware calibration. It then opens an onboarding walkthrough for
+the background worker and your preferred coding orchestrator.
 
 This is a source/Python tester build, not an Apple-signed .pkg application. If
 macOS quarantines the downloaded archive, open Terminal and invoke install.sh

@@ -28,6 +28,14 @@ from .config import (
 from .hardware import detect, memory_free_percent, validate_supported
 
 
+def runtime_executable(name: str) -> str | None:
+    """Find a runtime command in Fresnel's private environment or the user PATH."""
+    private = Path(sys.executable).parent / name
+    if private.is_file() and os.access(private, os.X_OK):
+        return str(private)
+    return shutil.which(name)
+
+
 def model_snapshot() -> Path | None:
     root = Path.home() / ".cache" / "huggingface" / "hub"
     candidate = root / f"models--{MODEL_REPO.replace('/', '--')}" / "snapshots" / MODEL_REVISION
@@ -80,6 +88,11 @@ def install_runtime(*, dry_run: bool = False) -> list[str]:
     )
     if not dry_run:
         subprocess.run(command, check=True)
+        if not runtime_executable("spark-mlx-server"):
+            raise RuntimeError(
+                "Spark runtime installed but its server entry point was not created in "
+                f"{Path(sys.executable).parent}"
+            )
     return command
 
 
@@ -103,8 +116,18 @@ def server_command(config: Config) -> list[str]:
     model = config.model_path or str(model_snapshot() or "")
     if not model:
         raise RuntimeError("pinned Spark model is not downloaded; run `fresnel setup`")
+    executable = (
+        config.server_executable
+        if Path(config.server_executable).is_absolute()
+        and Path(config.server_executable).is_file()
+        else runtime_executable(Path(config.server_executable).name)
+    )
+    if not executable:
+        raise RuntimeError(
+            "Spark server is unavailable; run `fresnel doctor --fix --yes` to install it"
+        )
     return [
-        config.server_executable,
+        executable,
         "--model",
         model,
         "--host",
@@ -166,7 +189,7 @@ def doctor() -> dict:
     config = load_config()
     problems = validate_supported(hardware)
     snapshot = model_snapshot()
-    if not shutil.which(config.server_executable):
+    if not runtime_executable(Path(config.server_executable).name):
         problems.append(f"server executable is unavailable: {config.server_executable}")
     if not snapshot and not (config.model_path and Path(config.model_path).is_dir()):
         problems.append("pinned Spark model is not downloaded")
