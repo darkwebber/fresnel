@@ -1,7 +1,11 @@
+import io
+import json
+from urllib.error import HTTPError
+
 import pytest
 
 from fresnel.protocol import parse_plan, safe_path
-from fresnel.worker import apply_operations, parse, render_prompt
+from fresnel.worker import apply_operations, call, parse, render_prompt
 
 
 def raw_plan():
@@ -151,3 +155,32 @@ def test_loose_replace_marker_compatibility():
         )[0]
         == "operations"
     )
+
+
+def test_worker_retries_without_model_when_server_rejects_model_id(monkeypatch):
+    payloads = []
+    response_body = {
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"completion_tokens": 1},
+    }
+
+    class Response:
+        def __enter__(self):
+            return io.BytesIO(json.dumps(response_body).encode())
+
+        def __exit__(self, *_args):
+            return False
+
+    def open_request(request, **_kwargs):
+        payloads.append(json.loads(request.data))
+        if len(payloads) == 1:
+            raise HTTPError(request.full_url, 404, "unknown model", {}, None)
+        return Response()
+
+    monkeypatch.setattr("fresnel.worker.urllib.request.urlopen", open_request)
+    content, usage = call("http://local", "repo/model", "prompt", 32)
+    assert content == "ok"
+    assert payloads[0]["model"] == "repo/model"
+    assert "model" not in payloads[1]
+    assert usage["model_id"] == "server-default"
+    assert usage["model_id_fallback"] is True

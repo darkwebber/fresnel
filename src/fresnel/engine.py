@@ -13,6 +13,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
@@ -317,6 +318,9 @@ def _metrics(report: dict, config: Config) -> dict:
         "worker_completion_tokens": sum(
             a.get("usage", {}).get("completion_tokens", 0) for a in attempts
         ),
+        "worker_model_id_fallbacks": sum(
+            bool(a.get("usage", {}).get("model_id_fallback")) for a in attempts
+        ),
         "worker_seconds": worker_seconds,
         "successful_components_per_worker_minute": round(
             60 * sum(component["success"] for component in report["components"]) / worker_seconds, 3
@@ -336,12 +340,35 @@ def run(
     decisions: dict[str, str] | None = None,
     coordinator_calls: list[dict] | None = None,
     store: Store | None = None,
+    progress: Callable[[dict], None] | None = None,
 ) -> dict:
     repo = repo.resolve()
     decisions = decisions or {}
     store = store or Store()
     memory = Memory(store)
     run_id = store.new_run(request or plan.objective, config.active_worker)
+    progress_callback = progress or (lambda _event: None)
+    progress_history: list[dict] = []
+
+    def report_progress(event: dict) -> None:
+        snapshot = dict(event)
+        progress_history.append(snapshot)
+        progress_callback(snapshot)
+
+    progress = report_progress
+    run_started = time.perf_counter()
+    component_seconds: list[float] = []
+    progress(
+        {
+            "state": "started",
+            "phase": "workspace",
+            "label": "Preparing isolated workspace",
+            "run_id": run_id,
+            "progress": 0,
+            "total": len(plan.components),
+            "eta_seconds": None,
+        }
+    )
     store.event(run_id, "PLANNED", {"objective": plan.objective})
     targets = tuple(
         dict.fromkeys(path for component in plan.components for path in component.targets)
@@ -380,7 +407,9 @@ def run(
         "components": [],
         "integration_validation": [],
         "notifications": [],
+        "progress": progress_history,
         "diff": "",
+        "worker_model": config.model_path or config.model_repo,
     }
     try:
         with tempfile.TemporaryDirectory(prefix="fresnel-") as temporary:
@@ -390,6 +419,17 @@ def run(
             repository_index = RepositoryIndex(store, project_identifier, work)
             index_metrics = repository_index.index()
             report["memory"] = {"repository_index": index_metrics}
+            progress(
+                {
+                    "state": "updated",
+                    "phase": "workspace",
+                    "label": f"Workspace ready · indexed {index_metrics['files']} files",
+                    "run_id": run_id,
+                    "progress": 0,
+                    "total": len(plan.components),
+                    "eta_seconds": None,
+                }
+            )
             for contract in plan.contracts:
                 path = safe_path(work, contract.path)
                 if path.exists():
@@ -397,7 +437,26 @@ def run(
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(contract.content)
             exa_key = environment_key("EXA_API_KEY", "exa-api-key")
-            for component in plan.components:
+            for component_index, component in enumerate(plan.components, 1):
+                component_started = time.perf_counter()
+                remaining = len(plan.components) - component_index + 1
+                eta = (
+                    round(sum(component_seconds) / len(component_seconds) * remaining)
+                    if component_seconds
+                    else None
+                )
+                progress(
+                    {
+                        "state": "updated",
+                        "phase": "component",
+                        "label": f"Component {component_index}/{len(plan.components)} · {component.id}",
+                        "run_id": run_id,
+                        "component_id": component.id,
+                        "progress": component_index - 1,
+                        "total": len(plan.components),
+                        "eta_seconds": eta,
+                    }
+                )
                 store.event(run_id, "COMPONENT_RUNNING", {"component_id": component.id})
                 memory.event(
                     "COMPONENT_STARTED",
@@ -425,6 +484,22 @@ def run(
                 }
                 feedback = ""
                 for number in range(1, profile.max_attempts + 1):
+                    progress(
+                        {
+                            "state": "updated",
+                            "phase": "worker",
+                            "label": (
+                                f"Spark implementing {component.id} · "
+                                f"attempt {number}/{profile.max_attempts}"
+                            ),
+                            "run_id": run_id,
+                            "component_id": component.id,
+                            "attempt": number,
+                            "progress": component_index - 1,
+                            "total": len(plan.components),
+                            "eta_seconds": eta,
+                        }
+                    )
                     state_row = store.connection.execute(
                         "SELECT state_json FROM task_state WHERE run_id=?", (run_id,)
                     ).fetchone()
@@ -471,7 +546,7 @@ def run(
                     try:
                         output, usage = call_worker(
                             f"http://{config.host}:{config.port}/v1/chat/completions",
-                            config.model_repo,
+                            config.model_path or config.model_repo,
                             prompt,
                             budget.max_output_tokens,
                             temperature=profile.temperature,
@@ -491,6 +566,19 @@ def run(
                         }
                         fallback = component.targets[0] if len(component.targets) == 1 else None
                         kind, payload = parse_worker(output, fallback_target=fallback)
+                        progress(
+                            {
+                                "state": "updated",
+                                "phase": "worker",
+                                "label": f"Spark answered for {component.id} · {elapsed}s",
+                                "run_id": run_id,
+                                "component_id": component.id,
+                                "attempt": number,
+                                "progress": component_index - 1,
+                                "total": len(plan.components),
+                                "eta_seconds": eta,
+                            }
+                        )
                     except Exception as exc:
                         if isinstance(exc, WorkerTruncated):
                             output = exc.content
@@ -529,6 +617,19 @@ def run(
                             repo=repo,
                             run_id=run_id,
                         )
+                        progress(
+                            {
+                                "state": "updated",
+                                "phase": "retry",
+                                "label": f"Retrying {component.id} · {details}",
+                                "run_id": run_id,
+                                "component_id": component.id,
+                                "attempt": number,
+                                "progress": component_index - 1,
+                                "total": len(plan.components),
+                                "eta_seconds": eta,
+                            }
+                        )
                         if isinstance(exc, WorkerTruncated):
                             feedback = (
                                 "Previous output hit the token limit. Do not repeat prose or unchanged code. "
@@ -553,6 +654,18 @@ def run(
                         if approval["decision"] == "escalate":
                             report["notifications"].append(approval)
                             component_result["status"] = "AWAITING_APPROVAL"
+                            progress(
+                                {
+                                    "state": "updated",
+                                    "phase": "approval",
+                                    "label": f"User approval needed for {component.id}",
+                                    "run_id": run_id,
+                                    "component_id": component.id,
+                                    "progress": component_index - 1,
+                                    "total": len(plan.components),
+                                    "eta_seconds": None,
+                                }
+                            )
                             break
                         if approval["decision"] == "deny":
                             feedback = (
@@ -616,6 +729,18 @@ def run(
                         repo=repo,
                         run_id=run_id,
                     )
+                    progress(
+                        {
+                            "state": "updated",
+                            "phase": "validation",
+                            "label": f"Validating {component.id}",
+                            "run_id": run_id,
+                            "component_id": component.id,
+                            "progress": component_index - 1,
+                            "total": len(plan.components),
+                            "eta_seconds": eta,
+                        }
+                    )
                     passed, validation = _validation(
                         work, component.validation, python=project_python
                     )
@@ -643,6 +768,29 @@ def run(
                             repo=repo,
                             run_id=run_id,
                         )
+                        component_seconds.append(time.perf_counter() - component_started)
+                        remaining_after = len(plan.components) - component_index
+                        eta_after = (
+                            round(
+                                sum(component_seconds)
+                                / len(component_seconds)
+                                * remaining_after
+                            )
+                            if remaining_after
+                            else 0
+                        )
+                        progress(
+                            {
+                                "state": "updated",
+                                "phase": "component",
+                                "label": f"Component {component.id} passed validation",
+                                "run_id": run_id,
+                                "component_id": component.id,
+                                "progress": component_index,
+                                "total": len(plan.components),
+                                "eta_seconds": eta_after,
+                            }
+                        )
                         break
                     feedback = (
                         "Repair only the failing behavior.\n"
@@ -663,6 +811,17 @@ def run(
                     break
             else:
                 store.event(run_id, "INTEGRATING", {})
+                progress(
+                    {
+                        "state": "updated",
+                        "phase": "integration",
+                        "label": "Running integration validation",
+                        "run_id": run_id,
+                        "progress": len(plan.components),
+                        "total": len(plan.components),
+                        "eta_seconds": None,
+                    }
+                )
                 report["success"], report["integration_validation"] = _validation(
                     work, plan.integration_validation, python=project_python
                 )
@@ -687,23 +846,49 @@ def run(
         if report["notifications"]:
             status = "AWAITING_APPROVAL"
         report["status"] = status
-        store.finish(run_id, status, report)
         memory.event(
             "RUN_COMPLETED" if report["success"] else "RUN_FAILED",
             {"status": status, "summary": status.lower().replace("_", " ")},
             repo=repo,
             run_id=run_id,
         )
+        progress(
+            {
+                "state": "completed" if report["success"] else "failed",
+                "phase": "complete",
+                "label": "Fresnel run passed" if report["success"] else "Fresnel run failed",
+                "run_id": run_id,
+                "progress": sum(component["success"] for component in report["components"]),
+                "total": len(plan.components),
+                "eta_seconds": 0,
+                "seconds": round(time.perf_counter() - run_started, 3),
+                "error": "" if report["success"] else status,
+            }
+        )
+        store.finish(run_id, status, report)
         return report
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
         report["metrics"] = _metrics(report, config)
         report["status"] = "FAILED"
-        store.finish(run_id, "FAILED", report)
         memory.event(
             "RUN_FAILED",
             {"status": "FAILED", "summary": report["error"]},
             repo=repo,
             run_id=run_id,
         )
+        progress(
+            {
+                "state": "failed",
+                "phase": "complete",
+                "label": "Fresnel run failed",
+                "run_id": run_id,
+                "progress": len(report["components"]),
+                "total": len(plan.components),
+                "eta_seconds": 0,
+                "seconds": round(time.perf_counter() - run_started, 3),
+                "error": report["error"],
+            }
+        )
+        store.finish(run_id, "FAILED", report)
         return report

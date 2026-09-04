@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import threading
 import time
@@ -9,13 +11,26 @@ from typing import Self, TextIO
 
 
 class BenchmarkProgress:
-    """Render a live spinner for blocking benchmark probes on a TTY."""
+    """Render terminal haptics or structured progress events for an orchestrator."""
 
     frames = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
-    def __init__(self, stream: TextIO | None = None, *, enabled: bool | None = None):
+    def __init__(
+        self,
+        stream: TextIO | None = None,
+        *,
+        enabled: bool | None = None,
+        mode: str | None = None,
+    ):
         self.stream = stream or sys.stderr
-        self.enabled = self.stream.isatty() if enabled is None else enabled
+        selected = mode or os.environ.get("FRESNEL_PROGRESS", "auto")
+        if selected not in {"auto", "json", "none"}:
+            raise ValueError("progress mode must be auto, json, or none")
+        self.json = selected == "json"
+        self.enabled = (
+            selected != "none"
+            and (self.json or (self.stream.isatty() if enabled is None else enabled))
+        )
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._label = ""
@@ -25,9 +40,16 @@ class BenchmarkProgress:
     def __call__(self, event: dict) -> None:
         if not self.enabled:
             return
+        event = {"timestamp": round(time.time(), 3), **event}
+        if self.json:
+            self.stream.write("FRESNEL_PROGRESS " + json.dumps(event, separators=(",", ":")) + "\n")
+            self.stream.flush()
+            return
         state = event["state"]
         if state == "started":
-            self._start(str(event["label"]))
+            self._start(self._display_label(event))
+        elif state == "updated":
+            self._label = self._display_label(event)
         elif state in {"completed", "failed"}:
             self._complete(event, failed=state == "failed")
         elif state == "finished":
@@ -37,6 +59,16 @@ class BenchmarkProgress:
                 f"{event['maximum_output']:,} output)\n"
             )
             self.stream.flush()
+
+    @staticmethod
+    def _display_label(event: dict) -> str:
+        label = str(event["label"])
+        eta = event.get("eta_seconds", "absent")
+        if eta is None:
+            return label + " · ETA estimating"
+        if eta != "absent":
+            return label + f" · ETA {eta}s"
+        return label
 
     def _start(self, label: str) -> None:
         self.close()

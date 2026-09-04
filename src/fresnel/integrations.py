@@ -33,11 +33,12 @@ def contract_data() -> dict[str, Any]:
             "Run Fresnel in its disposable workspace, inspect validation evidence and diff, and apply only after semantic review.",
             "Surface AWAITING_APPROVAL to the user; never infer approval for destructive or externally visible actions.",
             "Use Fresnel memory replay after interruption and report quality, token, latency, cache, and retry metrics.",
+            "Relay MCP progress notifications or CLI JSON progress to the user, including phase, component, attempt, completed/total, ETA, retries, and validation state.",
         ],
         "commands": {
             "health": "fresnel doctor --json",
             "plan": "fresnel plan --repo REPO --request REQUEST --output PLAN.json",
-            "run": "fresnel run --repo REPO --plan PLAN.json --output REPORT.json",
+            "run": "fresnel run --repo REPO --plan PLAN.json --output REPORT.json --progress json",
             "review": "fresnel review REPORT.json",
             "apply": "fresnel run --repo REPO --plan PLAN.json --apply",
             "contract": "fresnel contract --format json",
@@ -104,6 +105,9 @@ into Spark; declare context and let Fresnel retrieve exact evidence.
 
 When reporting results, include validation outcome, whether changes were applied, coordinator and
 worker tokens, cache hits, retries, reference reads, latency, and any pending approval.
+During a long call, relay Fresnel progress rather than leaving the user with an apparently idle
+agent. MCP progress notifications are preferred; CLI integrations consume `--progress json` from
+stderr without mixing it into the final JSON report.
 """
 
 

@@ -1,4 +1,5 @@
 import io
+import json
 import time
 
 from fresnel.progress import BenchmarkProgress
@@ -39,3 +40,22 @@ def test_progress_is_silent_when_disabled():
     progress({"state": "started", "label": "Hidden"})
     progress({"state": "completed", "label": "Hidden", "seconds": 1})
     assert stream.getvalue() == ""
+
+
+def test_progress_json_mode_is_machine_readable_and_includes_eta():
+    stream = io.StringIO()
+    progress = BenchmarkProgress(stream, mode="json")
+    progress(
+        {
+            "state": "updated",
+            "phase": "worker",
+            "label": "Spark is working",
+            "progress": 1,
+            "total": 3,
+            "eta_seconds": 12,
+        }
+    )
+    line = stream.getvalue().removeprefix("FRESNEL_PROGRESS ")
+    event = json.loads(line)
+    assert event["phase"] == "worker"
+    assert event["eta_seconds"] == 12

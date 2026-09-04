@@ -97,6 +97,17 @@ fresnel run --repo /path/to/repo --plan plan.json --output review.json
 fresnel review review.json
 ```
 
+Interactive commands show a spinner, current phase, elapsed time, validation
+state, and an ETA once Fresnel has enough evidence to estimate one. Automation
+can request the same stream as newline-delimited events with `--progress json`.
+Each final run report also retains its progress history, so an orchestrator can
+replay status even if its client does not display live notifications.
+
+Fresnel uses the configured local snapshot path as the worker model ID. If an
+OpenAI-compatible server rejects that ID with HTTP 404, it retries once without
+the model field so the server can select its advertised default. The fallback
+is recorded in run metrics instead of being hidden.
+
 Use `--apply` only after reviewing a passing result. Fresnel currently routes
 all real worker calls to Spark 2.5 4B MLX 8-bit; future routing runs in shadow
 mode until benchmark evidence supports activation.
@@ -139,6 +150,12 @@ are reversible with `fresnel integrations uninstall ...`. Registered,
 unmodified adapters auto-sync across Fresnel upgrades; locally modified adapters
 are preserved and reported by `fresnel integrations status`, `diff`, and
 `repair`. `fresnel contract --format json` is the tool-neutral source of truth.
+
+`fresnel mcp` prints an immediate ready/waiting message when started directly in
+a terminal. Under Cursor or another MCP host it preserves stdout for JSON-RPC,
+then emits standard MCP progress notifications for planning, worker attempts,
+retries, validation, approvals, completion, and ETA. Integration rules require
+the orchestrator to relay these updates to the user instead of going silent.
 
 ## Metrics and learning
 

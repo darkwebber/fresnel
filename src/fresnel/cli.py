@@ -56,9 +56,19 @@ def load_decisions(path: Path | None) -> dict[str, str]:
     return raw.get("decisions", raw)
 
 
+def progress_reporter(args, *, enabled: bool | None = None) -> BenchmarkProgress:
+    selected = getattr(args, "progress", None) or "auto"
+    if selected == "auto" and os.environ.get("FRESNEL_PROGRESS"):
+        selected = os.environ["FRESNEL_PROGRESS"]
+    return BenchmarkProgress(
+        enabled=enabled,
+        mode=selected,
+    )
+
+
 def cmd_setup(args) -> int:
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
-    with BenchmarkProgress(enabled=interactive and not args.skip_benchmark) as progress:
+    with progress_reporter(args, enabled=interactive) as progress:
         result = guided_setup(
             assume_yes=args.yes,
             dry_run=args.dry_run,
@@ -97,6 +107,13 @@ def cmd_doctor(args) -> int:
 
 def cmd_serve(_args) -> int:
     config = load_config()
+    if sys.stderr.isatty():
+        print(
+            f"◌ Starting Spark on http://{config.host}:{config.port} · "
+            "first model load can take 10–30s · Ctrl-C to stop",
+            file=sys.stderr,
+            flush=True,
+        )
     os.execvp(server_command(config)[0], server_command(config))
     return 0
 
@@ -105,7 +122,7 @@ def cmd_benchmark(args) -> int:
     config = load_config()
     endpoint = f"http://{config.host}:{config.port}/v1/chat/completions"
     interactive = sys.stderr.isatty() and not args.json
-    with BenchmarkProgress(enabled=interactive) as progress:
+    with progress_reporter(args, enabled=interactive) as progress:
         result = calibrate(endpoint, quick=args.quick, progress=progress)
     config.profiles = result["profiles"]
     config.profile = result["selected_profile"]
@@ -162,7 +179,9 @@ def cmd_ask(args) -> int:
     memory = Memory() if args.session else None
     result = None
     try:
-        with BenchmarkProgress(enabled=sys.stderr.isatty() and not args.json) as progress:
+        with progress_reporter(
+            args, enabled=sys.stderr.isatty() and not args.json
+        ) as progress:
             progress({"state": "started", "label": "Spark is thinking"})
             try:
                 first = True
@@ -266,7 +285,9 @@ def cmd_tune(args) -> int:
     candidates = tuple(args.candidate) if args.candidate else DEFAULT_CANDIDATES
     if not candidates or any(value < 0 or value > 2 for value in candidates):
         raise ValueError("temperature candidates must be between 0 and 2")
-    with BenchmarkProgress(enabled=sys.stderr.isatty() and not args.json) as progress:
+    with progress_reporter(
+        args, enabled=sys.stderr.isatty() and not args.json
+    ) as progress:
         result = tune(endpoint, candidates=candidates, progress=progress)
     values = config.profiles.setdefault(config.profile, asdict(config.selected_profile))
     values["temperature"] = result["selected_temperature"]
@@ -294,7 +315,45 @@ def coordinator_settings(args) -> tuple[str, str, str | None]:
 
 def cmd_plan(args) -> int:
     endpoint, model, key = coordinator_settings(args)
-    plan, calls = plan_request(args.request, args.repo.resolve(), endpoint, model, key)
+    with progress_reporter(args, enabled=sys.stderr.isatty()) as progress:
+        progress(
+            {
+                "state": "started",
+                "phase": "planning",
+                "label": "Coordinator is designing the implementation plan",
+                "progress": 0,
+                "total": 1,
+                "eta_seconds": None,
+            }
+        )
+        started = time.perf_counter()
+        try:
+            plan, calls = plan_request(args.request, args.repo.resolve(), endpoint, model, key)
+        except Exception as exc:
+            progress(
+                {
+                    "state": "failed",
+                    "phase": "planning",
+                    "label": "Planning failed",
+                    "progress": 0,
+                    "total": 1,
+                    "eta_seconds": 0,
+                    "seconds": round(time.perf_counter() - started, 3),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            raise
+        progress(
+            {
+                "state": "completed",
+                "phase": "planning",
+                "label": f"Plan ready · {len(plan.components)} components",
+                "progress": 1,
+                "total": 1,
+                "eta_seconds": 0,
+                "seconds": round(time.perf_counter() - started, 3),
+            }
+        )
     result = {"plan": asdict(plan), "coordinator_calls": calls}
     if args.output:
         args.output.write_text(json.dumps(result["plan"], indent=2) + "\n")
@@ -303,25 +362,64 @@ def cmd_plan(args) -> int:
 
 
 def cmd_run(args) -> int:
-    coordinator_calls = []
-    if args.plan:
-        plan = parse_plan(json.loads(args.plan.read_text()))
-        request = args.request or plan.objective
-    else:
-        endpoint, model, key = coordinator_settings(args)
-        plan, coordinator_calls = plan_request(
-            args.request, args.repo.resolve(), endpoint, model, key
+    with progress_reporter(args, enabled=sys.stderr.isatty()) as progress:
+        coordinator_calls = []
+        if args.plan:
+            plan = parse_plan(json.loads(args.plan.read_text()))
+            request = args.request or plan.objective
+        else:
+            endpoint, model, key = coordinator_settings(args)
+            planning_started = time.perf_counter()
+            progress(
+                {
+                    "state": "started",
+                    "phase": "planning",
+                    "label": "Coordinator is designing the implementation plan",
+                    "progress": 0,
+                    "total": 1,
+                    "eta_seconds": None,
+                }
+            )
+            try:
+                plan, coordinator_calls = plan_request(
+                    args.request, args.repo.resolve(), endpoint, model, key
+                )
+            except Exception as exc:
+                progress(
+                    {
+                        "state": "failed",
+                        "phase": "planning",
+                        "label": "Planning failed",
+                        "progress": 0,
+                        "total": 1,
+                        "eta_seconds": 0,
+                        "seconds": round(time.perf_counter() - planning_started, 3),
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                raise
+            progress(
+                {
+                    "state": "completed",
+                    "phase": "planning",
+                    "label": f"Plan ready · {len(plan.components)} components",
+                    "progress": 1,
+                    "total": 1,
+                    "eta_seconds": 0,
+                    "seconds": round(time.perf_counter() - planning_started, 3),
+                }
+            )
+            request = args.request
+        result = run(
+            args.repo,
+            plan,
+            load_config(),
+            request=request,
+            apply=args.apply,
+            decisions=load_decisions(args.approval_decisions),
+            coordinator_calls=coordinator_calls,
+            progress=progress,
         )
-        request = args.request
-    result = run(
-        args.repo,
-        plan,
-        load_config(),
-        request=request,
-        apply=args.apply,
-        decisions=load_decisions(args.approval_decisions),
-        coordinator_calls=coordinator_calls,
-    )
     if args.output:
         args.output.write_text(json.dumps(result, indent=2) + "\n")
     diff = result.get("diff", "")
@@ -334,6 +432,7 @@ def cmd_run(args) -> int:
             "success": result["success"],
             "applied": result["applied"],
             "metrics": result.get("metrics"),
+            "progress": result.get("progress"),
             "notifications": result.get("notifications"),
             "failed_components": [
                 component["id"] for component in result["components"] if not component["success"]
@@ -565,6 +664,14 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--version", action="version", version=f"Fresnel {__version__}")
     commands = root.add_subparsers(dest="command", required=True)
 
+    def add_progress(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument(
+            "--progress",
+            choices=("auto", "json", "none"),
+            default="auto",
+            help="terminal haptics, structured JSON events, or silence",
+        )
+
     setup = commands.add_parser("setup", help="guided Apple Silicon setup")
     setup.add_argument("--yes", action="store_true")
     setup.add_argument("--dry-run", action="store_true")
@@ -572,6 +679,7 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--quick", action="store_true")
     setup.add_argument("--service", action="store_true")
     setup.add_argument("--no-onboard", action="store_true")
+    add_progress(setup)
     setup.set_defaults(handler=cmd_setup)
 
     onboard = commands.add_parser("onboard", help="finish setup with an interactive walkthrough")
@@ -593,6 +701,7 @@ def parser() -> argparse.ArgumentParser:
     benchmark = commands.add_parser("benchmark", help="calibrate this Mac")
     benchmark.add_argument("--quick", action="store_true")
     benchmark.add_argument("--json", action="store_true")
+    add_progress(benchmark)
     benchmark.set_defaults(handler=cmd_benchmark)
 
     ask = commands.add_parser("ask", help="ask the local Spark model a one-off question")
@@ -620,11 +729,13 @@ def parser() -> argparse.ArgumentParser:
     ask.add_argument(
         "--no-stream", action="store_true", help="wait and print one complete response"
     )
+    add_progress(ask)
     ask.set_defaults(handler=cmd_ask, copy=None)
 
     tune_parser = commands.add_parser("tune", help="auto-tune sampling on local behavior checks")
     tune_parser.add_argument("--candidate", type=float, action="append")
     tune_parser.add_argument("--json", action="store_true")
+    add_progress(tune_parser)
     tune_parser.set_defaults(handler=cmd_tune)
 
     plan = commands.add_parser("plan", help="compile a request into a Fresnel plan")
@@ -633,6 +744,7 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--coordinator-endpoint")
     plan.add_argument("--coordinator-model")
     plan.add_argument("--output", type=Path)
+    add_progress(plan)
     plan.set_defaults(handler=cmd_plan)
 
     run_parser = commands.add_parser("run", help="plan/delegate/validate in a disposable workspace")
@@ -645,6 +757,7 @@ def parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--approval-decisions", type=Path)
     run_parser.add_argument("--apply", action="store_true")
     run_parser.add_argument("--output", type=Path)
+    add_progress(run_parser)
     run_parser.set_defaults(handler=cmd_run)
 
     status = commands.add_parser("status", help="show recent runs")

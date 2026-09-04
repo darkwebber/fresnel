@@ -172,3 +172,26 @@ def test_engine_reduces_output_budget_under_memory_pressure(tmp_path, monkeypatc
     assert observed == [2048]
     assert result["components"][0]["attempts"][0]["budget"]["pressure"] == "high"
     store.close()
+
+
+def test_engine_uses_snapshot_model_id_and_emits_structured_progress(tmp_path, monkeypatch):
+    models = []
+    events = []
+
+    def worker(_endpoint, model, *_args, **_kwargs):
+        models.append(model)
+        return fake_worker()
+
+    monkeypatch.setattr("fresnel.engine.call_worker", worker)
+    store = Store(tmp_path / "progress.db")
+    config = Config(model_path="/models/snapshots/revision")
+    result = run(tmp_path, plan(), config, store=store, progress=events.append)
+    assert result["success"] is True
+    assert models == ["/models/snapshots/revision"]
+    assert events[0]["phase"] == "workspace"
+    assert any(event["phase"] == "worker" for event in events)
+    assert any(event["phase"] == "validation" for event in events)
+    assert events[-1]["state"] == "completed"
+    assert events[-1]["progress"] == events[-1]["total"] == 1
+    assert result["progress"] == events
+    store.close()

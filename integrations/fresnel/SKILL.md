@@ -5,7 +5,7 @@ description: Orchestrate cost-efficient local implementation through Fresnel whi
 
 # Fresnel
 
-Contract version: 0.4.1. The current external agent is Fresnel's brain and taste-maker.
+Contract version: 0.4.2. The current external agent is Fresnel's brain and taste-maker.
 Spark is a bounded implementation worker, never the architect or final reviewer.
 
 ## Workflow
@@ -18,18 +18,19 @@ Spark is a bounded implementation worker, never the architect or final reviewer.
 6. Review validation evidence and the complete diff. Use `--apply` only when implementation was requested and all quality gates pass.
 7. If exit code 2 or `AWAITING_APPROVAL` appears, surface the notification. Record the user's decision, then resume the same run or plan.
 8. Perform the final semantic review yourself. Spark output is untrusted until protocol, component, integration, and human-quality checks pass.
+9. Relay Fresnel progress to the user: current phase, component/attempt, completed/total, ETA, retries, and validation state. MCP emits these as progress notifications; CLI orchestration should use `--progress json`. Never leave a long-running delegation looking idle.
 
 ```bash
 fresnel doctor
 fresnel plan --repo /absolute/repo --request "..." --output /tmp/plan.json
-fresnel run --repo /absolute/repo --plan /tmp/plan.json --output /tmp/report.json
+fresnel run --repo /absolute/repo --plan /tmp/plan.json --output /tmp/report.json --progress json
 fresnel review /tmp/report.json
 fresnel run --repo /absolute/repo --plan /tmp/plan.json --apply
 fresnel memory inspect --run RUN_ID
 fresnel contract --format json
 ```
 
-Prefer MCP tools when the host supports MCP; the CLI contract is the portable fallback. Read [protocol.md](references/protocol.md) when creating plans, [approvals.md](references/approvals.md) for approval behavior, [memory.md](references/memory.md) for replay and retrieval, and [setup.md](references/setup.md) for diagnostics.
+Prefer MCP tools when the host supports MCP; the CLI contract is the portable fallback. MCP tool calls provide live progress notifications. If the host suppresses notifications, tell the user the last known phase before waiting and include the final progress history from the result. Read [protocol.md](references/protocol.md) when creating plans, [approvals.md](references/approvals.md) for approval behavior, [memory.md](references/memory.md) for replay and retrieval, and [setup.md](references/setup.md) for diagnostics.
 
 Never place secrets in plans or worker prompts. Never let Spark modify contract files, files outside declared targets, or repository state outside Fresnel's disposable workspace.
 

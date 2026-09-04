@@ -8,6 +8,7 @@ import re
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 
 from .protocol import Component, safe_path
 
@@ -142,7 +143,6 @@ def call(
     min_p: float = 0.0,
 ) -> tuple[str, dict[str, Any]]:
     payload = {
-        "model": model,
         "messages": [
             {
                 "role": "system",
@@ -156,17 +156,33 @@ def call(
         "min_p": min_p,
         "max_tokens": max_tokens,
     }
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        body = json.load(response)
+    if model:
+        payload["model"] = model
+
+    def send(body: dict[str, Any]) -> dict[str, Any]:
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.load(response)
+
+    model_fallback = False
+    try:
+        body = send(payload)
+    except HTTPError as exc:
+        if exc.code != 404 or "model" not in payload:
+            raise
+        payload.pop("model")
+        body = send(payload)
+        model_fallback = True
     choice = body["choices"][0]
     usage = dict(body.get("usage", {}))
     usage["finish_reason"] = choice.get("finish_reason")
+    usage["model_id"] = model if not model_fallback else "server-default"
+    usage["model_id_fallback"] = model_fallback
     if choice.get("finish_reason") == "length":
         raise WorkerTruncated(choice["message"].get("content", ""), usage)
     return choice["message"].get("content", ""), usage

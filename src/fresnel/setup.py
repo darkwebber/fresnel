@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
@@ -60,6 +61,17 @@ def server_healthy(host: str, port: int) -> bool:
             return response.status == 200
     except Exception:
         return False
+
+
+def server_models(host: str, port: int, *, timeout: float = 0.5) -> list[str]:
+    try:
+        with urllib.request.urlopen(
+            f"http://{host}:{port}/v1/models", timeout=timeout
+        ) as response:
+            body = json.load(response)
+        return [str(item["id"]) for item in body.get("data", []) if item.get("id")]
+    except Exception:
+        return []
 
 
 def wait_for_server(config: Config, timeout: int = 180) -> None:
@@ -219,6 +231,20 @@ def doctor() -> dict:
         problems.append("pinned Spark model is not downloaded")
     free_percent = memory_free_percent()
     warnings = []
+    advertised_models = server_models(config.host, config.port)
+    requested_model = config.model_path or config.model_repo
+    selected_model = (
+        requested_model
+        if requested_model in advertised_models
+        else advertised_models[0]
+        if advertised_models
+        else None
+    )
+    if advertised_models and requested_model not in advertised_models:
+        warnings.append(
+            "configured model ID is not advertised by the running server; "
+            "worker calls will retry with the server default"
+        )
     output_tools = {
         "glow": shutil.which("glow"),
         "termtex": shutil.which("termtex"),
@@ -243,6 +269,13 @@ def doctor() -> dict:
         "problems": problems,
         "warnings": warnings,
         "output_tools": output_tools,
+        "worker_endpoint": {
+            "reachable": bool(advertised_models),
+            "advertised_models": advertised_models,
+            "requested_model": requested_model,
+            "selected_model": selected_model,
+            "fallback_supported": True,
+        },
         "memory_free_percent": free_percent,
     }
 
@@ -262,22 +295,84 @@ def guided_setup(
             assume_yes or input(f"{question} [Y/n] ").strip().lower() in {"", "y", "yes"}
         )
     )
+    progress = progress or (lambda _event: None)
+    setup_started = time.perf_counter()
+    progress(
+        {
+            "state": "started",
+            "phase": "setup",
+            "label": "Inspecting this Mac",
+            "progress": 0,
+            "total": 5,
+            "eta_seconds": None,
+        }
+    )
     ensure_directories()
     hardware = detect()
     problems = validate_supported(hardware)
     if problems:
         raise RuntimeError("; ".join(problems))
+    progress(
+        {
+            "state": "updated",
+            "phase": "setup",
+            "label": f"Hardware ready · {hardware.chip}",
+            "progress": 1,
+            "total": 5,
+            "eta_seconds": None,
+        }
+    )
     actions = []
     if not runtime_executable("spark-mlx-server"):
         if not confirm("Install the pinned Spark MLX runtime and Hugging Face downloader?"):
             raise RuntimeError("Spark runtime installation was declined")
+        progress(
+            {
+                "state": "updated",
+                "phase": "runtime",
+                "label": "Installing the pinned Spark runtime",
+                "progress": 1,
+                "total": 5,
+                "eta_seconds": 45,
+            }
+        )
         actions.append({"runtime_command": install_runtime(dry_run=dry_run)})
+    progress(
+        {
+            "state": "updated",
+            "phase": "runtime",
+            "label": "Spark runtime ready",
+            "progress": 2,
+            "total": 5,
+            "eta_seconds": None,
+        }
+    )
     model = model_snapshot()
     if not model:
         if not confirm(f"Download {MODEL_REPO} 8-bit (approximately 4.1 GB)?"):
             raise RuntimeError("model download was declined")
+        progress(
+            {
+                "state": "updated",
+                "phase": "model",
+                "label": "Downloading the 4.1 GB Spark checkpoint",
+                "progress": 2,
+                "total": 5,
+                "eta_seconds": None,
+            }
+        )
         model = download_model(dry_run=dry_run)
         actions.append({"downloaded_model": str(model)})
+    progress(
+        {
+            "state": "updated",
+            "phase": "model",
+            "label": "Model checkpoint ready",
+            "progress": 3,
+            "total": 5,
+            "eta_seconds": None,
+        }
+    )
     config = load_config()
     config.model_path = str(model)
     if not server_healthy(config.host, config.port):
@@ -288,9 +383,29 @@ def guided_setup(
         log_path = logs_dir() / "setup-worker.log"
         log = log_path.open("a")
         worker = subprocess.Popen(server_command(config), stdout=log, stderr=subprocess.STDOUT)
+        progress(
+            {
+                "state": "updated",
+                "phase": "server",
+                "label": "Loading Spark into unified memory",
+                "progress": 3,
+                "total": 5,
+                "eta_seconds": 30,
+            }
+        )
         actions.append({"temporary_worker_pid": worker.pid, "log": str(log_path)})
         try:
             wait_for_server(config)
+            progress(
+                {
+                    "state": "updated",
+                    "phase": "server",
+                    "label": "Spark server is responding",
+                    "progress": 4,
+                    "total": 5,
+                    "eta_seconds": None,
+                }
+            )
         except Exception:
             worker.terminate()
             worker.wait(timeout=15)
@@ -316,6 +431,17 @@ def guided_setup(
         actions.append({"service": str(service)})
     if not dry_run:
         save_config(config)
+    progress(
+        {
+            "state": "completed",
+            "phase": "setup",
+            "label": "Fresnel setup complete",
+            "progress": 5,
+            "total": 5,
+            "eta_seconds": 0,
+            "seconds": round(time.perf_counter() - setup_started, 3),
+        }
+    )
     return {
         "hardware": hardware.json(),
         "config": config.__dict__,

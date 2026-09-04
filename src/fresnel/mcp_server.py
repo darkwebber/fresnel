@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import threading
 from typing import Any
 
 from . import __version__
@@ -69,36 +71,105 @@ def response(identifier: Any, result: Any = None, error: str | None = None) -> d
     return message
 
 
+def _send(message: dict[str, Any]) -> None:
+    print(json.dumps(message), flush=True)
+
+
+def _progress_notification(event: dict[str, Any], token: Any = None) -> dict[str, Any]:
+    eta = event.get("eta_seconds")
+    eta_text = " · ETA estimating" if eta is None else f" · ETA {eta}s"
+    message = f"{event.get('label', 'Fresnel is working')}{eta_text}"
+    if token is not None:
+        return {
+            "jsonrpc": "2.0",
+            "method": "notifications/progress",
+            "params": {
+                "progressToken": token,
+                "progress": event.get("progress", 0),
+                "total": max(1, event.get("total", 1)),
+                "message": message,
+            },
+        }
+    return {
+        "jsonrpc": "2.0",
+        "method": "notifications/message",
+        "params": {"level": "info", "logger": "fresnel", "data": message},
+    }
+
+
+def execute_tool(command_line: list[str], progress_token: Any = None) -> tuple[str, int]:
+    """Run a CLI tool while translating stderr events into MCP progress notifications."""
+    environment = {**os.environ, "FRESNEL_PROGRESS": "json"}
+    process = subprocess.Popen(
+        command_line,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    diagnostics: list[str] = []
+
+    def read_stderr() -> None:
+        assert process.stderr is not None
+        for line in process.stderr:
+            if line.startswith("FRESNEL_PROGRESS "):
+                try:
+                    event = json.loads(line.removeprefix("FRESNEL_PROGRESS "))
+                    _send(_progress_notification(event, progress_token))
+                except json.JSONDecodeError:
+                    diagnostics.append(line)
+            else:
+                diagnostics.append(line)
+
+    reader = threading.Thread(target=read_stderr, daemon=True)
+    reader.start()
+    assert process.stdout is not None
+    output = process.stdout.read()
+    return_code = process.wait()
+    reader.join(timeout=2)
+    return output + "".join(diagnostics), return_code
+
+
 def serve() -> None:
+    if sys.stdin.isatty() or sys.stderr.isatty():
+        print(
+            "✓ Fresnel MCP ready · waiting for Cursor JSON-RPC requests on stdin · Ctrl-C to stop",
+            file=sys.stderr,
+            flush=True,
+        )
     for line in sys.stdin:
+        request: dict[str, Any] | None = None
         try:
             request = json.loads(line)
             method = request.get("method")
             if method == "initialize":
                 result = {
                     "protocolVersion": "2025-06-18",
-                    "capabilities": {"tools": {}},
+                    "capabilities": {"tools": {}, "logging": {}},
                     "serverInfo": {"name": "fresnel", "version": __version__},
+                    "instructions": (
+                        "Fresnel delegates bounded implementation to local Spark. Tool calls emit "
+                        "live phase, component, retry, validation, ETA, and completion progress."
+                    ),
                 }
             elif method == "tools/list":
                 result = {"tools": definitions()}
             elif method == "tools/call":
                 params = request.get("params", {})
-                completed = subprocess.run(
+                progress_token = params.get("_meta", {}).get("progressToken")
+                output, return_code = execute_tool(
                     command(params["name"], params.get("arguments", {})),
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    check=False,
+                    progress_token,
                 )
                 result = {
-                    "content": [{"type": "text", "text": completed.stdout}],
-                    "isError": completed.returncode != 0,
+                    "content": [{"type": "text", "text": output}],
+                    "isError": return_code != 0,
                 }
             elif method == "notifications/initialized":
                 continue
             else:
                 raise ValueError(f"unsupported method: {method}")
-            print(json.dumps(response(request.get("id"), result)), flush=True)
+            _send(response(request.get("id"), result))
         except Exception as exc:
-            print(json.dumps(response(None, error=f"{type(exc).__name__}: {exc}")), flush=True)
+            identifier = request.get("id") if isinstance(request, dict) else None
+            _send(response(identifier, error=f"{type(exc).__name__}: {exc}"))

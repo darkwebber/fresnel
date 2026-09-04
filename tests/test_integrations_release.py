@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 from fresnel import integrations, mcp_server
@@ -68,7 +69,7 @@ def test_opencode_uses_skill_path_and_backs_up_legacy_agent(tmp_path):
 
 def test_contract_is_versioned_and_exposed_over_mcp():
     contract = integrations.contract_data()
-    assert contract["contract_version"] == "0.4.1"
+    assert contract["contract_version"] == "0.4.2"
     assert "fresnel_contract" in {tool["name"] for tool in mcp_server.definitions()}
     assert mcp_server.command("fresnel_contract", {}) == [
         "fresnel",
@@ -76,3 +77,25 @@ def test_contract_is_versioned_and_exposed_over_mcp():
         "--format",
         "json",
     ]
+    notification = mcp_server._progress_notification(
+        {"label": "Validating", "progress": 1, "total": 2, "eta_seconds": 4}, "token"
+    )
+    assert notification["method"] == "notifications/progress"
+    assert notification["params"]["progressToken"] == "token"
+    assert "ETA 4s" in notification["params"]["message"]
+
+
+def test_mcp_forwards_cli_progress_notifications(monkeypatch):
+    messages = []
+    monkeypatch.setattr(mcp_server, "_send", messages.append)
+    script = (
+        "import sys; "
+        "print('FRESNEL_PROGRESS {\"label\":\"Working\",\"progress\":1,"
+        "\"total\":2,\"eta_seconds\":3}', file=sys.stderr); "
+        "print('{\"ok\":true}')"
+    )
+    output, return_code = mcp_server.execute_tool([sys.executable, "-c", script], "p1")
+    assert return_code == 0
+    assert '"ok":true' in output
+    assert messages[0]["method"] == "notifications/progress"
+    assert messages[0]["params"]["progressToken"] == "p1"

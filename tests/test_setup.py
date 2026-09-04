@@ -1,3 +1,5 @@
+import io
+import json
 from pathlib import Path
 
 from fresnel import setup
@@ -62,3 +64,15 @@ def test_doctor_reports_optional_output_helpers_without_becoming_unhealthy(
     assert result["healthy"] is True
     assert result["output_tools"]["glow"] is None
     assert any("terminal output helpers" in warning for warning in result["warnings"])
+
+
+def test_server_models_reads_advertised_ids(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return io.BytesIO(json.dumps({"data": [{"id": "/snapshot/model"}]}).encode())
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(setup.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    assert setup.server_models("127.0.0.1", 8081) == ["/snapshot/model"]
