@@ -1,9 +1,9 @@
 # Publishing Fresnel with Homebrew
 
-## Recommended first release: a personal tap
+## Current distribution: a personal tap
 
 A personal tap has no Homebrew maintainer review queue. Create a public upstream
-repository and immutable `v0.1.0` GitHub release, then create a separate public
+repository and immutable GitHub release, then use the separate public
 repository named `homebrew-tap` containing `Formula/fresnel.rb`. Once both are
 pushed, testers can install immediately:
 
@@ -14,7 +14,7 @@ brew install OWNER/tap/fresnel
 Before pushing the formula:
 
 1. Replace the placeholder homepage with the canonical Fresnel repository.
-2. Point `url` at the immutable `fresnel_agent-0.1.0.tar.gz` release asset.
+2. Point `url` at the immutable versioned `fresnel_agent-*.tar.gz` release asset.
 3. Generate SHA-256 from that exact uploaded asset.
 4. Run `brew style --formula Formula/fresnel.rb`.
 5. Run `HOMEBREW_NO_INSTALL_FROM_API=1 brew install --build-from-source Formula/fresnel.rb`.
@@ -24,6 +24,10 @@ Before pushing the formula:
 The current formula is suitable for an experimental tap. It intentionally
 downloads the pinned MLX runtime and model during `fresnel setup`, not during
 `brew install`.
+
+Fresnel's tap also carries a reviewed, commit-pinned `termtex` formula. The
+Fresnel formula depends on that helper plus the official `glow` formula, so a
+normal tap installation includes the complete terminal presentation stack.
 
 ## Later: homebrew/core
 
@@ -42,6 +46,6 @@ There is no guaranteed review duration for a core pull request.
 
 ## Tester archive
 
-Until a tap exists, distribute `fresnel-0.1.0-macos-arm64-tester.zip` and its
+For direct testing, distribute the versioned `fresnel-*-macos-arm64-tester.zip` and its
 adjacent `.sha256` file. Testers extract it and run `./install.sh` in Terminal.
 The archive contains no model weights or credentials.

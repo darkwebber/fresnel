@@ -7,6 +7,8 @@ import subprocess
 import sys
 from typing import Any
 
+from . import __version__
+
 TOOLS = [
     (
         "fresnel_plan",
@@ -19,6 +21,7 @@ TOOLS = [
     ("fresnel_review", "Read a Fresnel review packet", ["path"]),
     ("fresnel_apply", "Run and apply a validated plan", ["repo", "plan"]),
     ("fresnel_benchmark", "Run Mac-aware worker calibration", []),
+    ("fresnel_contract", "Read the current versioned orchestrator contract", []),
 ]
 
 
@@ -52,6 +55,8 @@ def command(name: str, arguments: dict[str, Any]) -> list[str]:
         return ["fresnel", "review", arguments["path"]]
     if name == "fresnel_benchmark":
         return ["fresnel", "benchmark", "--json"]
+    if name == "fresnel_contract":
+        return ["fresnel", "contract", "--format", "json"]
     raise ValueError(f"unknown MCP tool: {name}")
 
 
@@ -73,7 +78,7 @@ def serve() -> None:
                 result = {
                     "protocolVersion": "2025-06-18",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "fresnel", "version": "0.1.0"},
+                    "serverInfo": {"name": "fresnel", "version": __version__},
                 }
             elif method == "tools/list":
                 result = {"tools": definitions()}

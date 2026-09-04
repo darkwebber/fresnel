@@ -1,4 +1,4 @@
-FRESNEL 0.2.0 — APPLE SILICON TESTER BUILD
+FRESNEL 0.4.0 — APPLE SILICON TESTER BUILD
 
 Requirements
 ------------
@@ -39,6 +39,17 @@ Integrations
        fresnel integrations install codex
        fresnel integrations install cursor --project /path/to/project
        fresnel integrations install opencode --project /path/to/project
+
+Ask, sessions, and memory
+-------------------------
+
+       fresnel ask "Explain this PySpark failure"
+       fresnel ask --session investigation "Analyze this stack trace"
+       fresnel ask --session investigation --resume
+       fresnel memory status
+
+Interactive completed answers are rendered with Glow and copied to the macOS
+clipboard as raw Markdown. Pipes and JSON output are never copied.
 
 Uninstall
 ---------

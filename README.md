@@ -49,6 +49,20 @@ fresnel config sampling --temperature 0.25 --top-p 0.9 --top-k 40
 
 Per-question overrides are available through `fresnel ask --help`.
 
+For an explicit, repository-scoped conversation, name it and resume an
+interrupted answer without replaying the prompt:
+
+```bash
+fresnel ask --session migration "Plan the Scala migration"
+fresnel ask --session migration "Now implement the encoder"
+fresnel ask --session migration --resume
+```
+
+Interactive drafts use a temporary terminal screen. A completed answer is then
+rendered once through the pinned `termtex` math renderer and Glow, and its raw
+Markdown is copied to the clipboard. JSON, piped output, errors, and interrupted
+answers are never copied. Use `--render plain` or `--no-copy` to opt out.
+
 ## Development install
 
 ```bash
@@ -104,6 +118,12 @@ pressure, while output headroom is calculated from the actual prompt instead of
 assuming the configured 4096-token default is always sufficient. Run reports
 include truncation retries, on-demand excerpt reads, and pressure events.
 
+Fresnel also stores a versioned task charter, append-only events, a deterministic
+current-situation view, sparse repository evidence, validation results, and
+content-addressed compressed raw artifacts. The compact state is retained;
+unpinned raw blobs expire after 30 days. Inspect, replay, pin, garbage-collect,
+or deliberately forget memory with `fresnel memory --help`.
+
 ## Orchestrator integrations
 
 ```bash
@@ -115,7 +135,10 @@ fresnel integrations install generic --project /path/to/repo
 
 Every adapter points at the same protocol and CLI/MCP surface, so policy does
 not drift between products. Existing adapter files are backed up. Installations
-are reversible with `fresnel integrations uninstall ...`.
+are reversible with `fresnel integrations uninstall ...`. Registered,
+unmodified adapters auto-sync across Fresnel upgrades; locally modified adapters
+are preserved and reported by `fresnel integrations status`, `diff`, and
+`repair`. `fresnel contract --format json` is the tool-neutral source of truth.
 
 ## Metrics and learning
 

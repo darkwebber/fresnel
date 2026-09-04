@@ -1,7 +1,8 @@
 from pathlib import Path
 
-from fresnel import integrations
-from fresnel.release import homebrew_formula
+from fresnel import integrations, mcp_server
+from fresnel.release import homebrew_formula, termtex_formula
+from fresnel.store import Store
 
 
 def test_generic_and_cursor_integrations(tmp_path):
@@ -30,3 +31,46 @@ def test_homebrew_formula_is_pinned():
     assert 'sha256 "' + "a" * 64 + '"' in formula
     assert "virtualenv_install_with_resources" in formula
     assert 'homepage "https://example.test/fresnel"' in formula
+    assert 'depends_on "glow"' in formula
+    assert 'depends_on "darkwebber/tap/termtex"' in formula
+    assert "e3e21f41b38e9c2f579752dcfd9e23ac4cd15df7" in termtex_formula()
+
+
+def test_modified_integration_is_preserved_while_missing_one_syncs(tmp_path):
+    store = Store(tmp_path / "state.sqlite3")
+    integrations.install("generic", tmp_path, store=store)
+    destination = tmp_path / "FRESNEL.md"
+    destination.write_text("my customization\n")
+    result = integrations.sync("generic", tmp_path, store=store)
+    assert result[0]["action"] == "preserved"
+    assert destination.read_text() == "my customization\n"
+
+    destination.unlink()
+    result = integrations.sync("generic", tmp_path, store=store)
+    assert result[0]["action"] == "updated"
+    assert destination.is_file()
+    store.close()
+
+
+def test_opencode_uses_skill_path_and_backs_up_legacy_agent(tmp_path):
+    legacy = tmp_path / ".opencode/agents/fresnel.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("old adapter")
+    store = Store(tmp_path / "state.sqlite3")
+    changes = integrations.install("opencode", tmp_path, store=store)
+    assert (tmp_path / ".opencode/skills/fresnel/SKILL.md").is_file()
+    assert not legacy.exists()
+    assert "backup" in changes[-1]
+    store.close()
+
+
+def test_contract_is_versioned_and_exposed_over_mcp():
+    contract = integrations.contract_data()
+    assert contract["contract_version"] == "0.4.0"
+    assert "fresnel_contract" in {tool["name"] for tool in mcp_server.definitions()}
+    assert mcp_server.command("fresnel_contract", {}) == [
+        "fresnel",
+        "contract",
+        "--format",
+        "json",
+    ]

@@ -195,6 +195,18 @@ def doctor() -> dict:
         problems.append("pinned Spark model is not downloaded")
     free_percent = memory_free_percent()
     warnings = []
+    output_tools = {
+        "glow": shutil.which("glow"),
+        "termtex": shutil.which("termtex"),
+        "pbcopy": shutil.which("pbcopy") or ("/usr/bin/pbcopy" if Path("/usr/bin/pbcopy").is_file() else None),
+    }
+    missing_output_tools = [name for name, path in output_tools.items() if not path]
+    if missing_output_tools:
+        warnings.append(
+            "optional terminal output helpers are unavailable: "
+            + ", ".join(missing_output_tools)
+            + "; answers will fall back gracefully"
+        )
     if free_percent is not None and free_percent < 20:
         warnings.append("less than 20% system memory is currently free; use the eco profile")
     if hardware.thermal_state in {"serious", "critical"}:
@@ -206,6 +218,7 @@ def doctor() -> dict:
         "model_snapshot": str(snapshot) if snapshot else None,
         "problems": problems,
         "warnings": warnings,
+        "output_tools": output_tools,
         "memory_free_percent": free_percent,
     }
 

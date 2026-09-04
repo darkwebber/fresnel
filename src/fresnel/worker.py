@@ -57,12 +57,23 @@ def render_prompt(
     max_input_tokens: int | None = None,
     response_budget: int | None = None,
     attempt: int = 1,
+    situation: str = "",
+    playbooks: str = "",
 ) -> str:
     input_characters = max_input_tokens * 4 if max_input_tokens else 10**9
     reference_limit = min(12000, max(2000, input_characters // 5))
     references = _bounded_content(references, reference_limit, "reference packet")
     paths = tuple(dict.fromkeys(component.targets + component.context))
-    fixed_estimate = 5000 + len(feedback) + len(references) + len(goal or "")
+    situation = _bounded_content(situation, 6000, "situation memory")
+    playbooks = _bounded_content(playbooks, 3000, "procedural memory")
+    fixed_estimate = (
+        5000
+        + len(feedback)
+        + len(references)
+        + len(goal or "")
+        + len(situation)
+        + len(playbooks)
+    )
     available_file_characters = max(1000, input_characters - fixed_estimate)
     per_file_limit = max(300, available_file_characters // max(1, len(paths)))
     blocks = []
@@ -87,6 +98,8 @@ ATTEMPT: {attempt}
 OUTPUT BUDGET: {response_budget or '[profile default]'} tokens. Use the smallest complete edit.
 
 OVERALL GOAL:\n{goal or component.task}
+CURRENT SITUATION (event-derived):\n{situation or '[fresh component]'}
+RELEVANT VERIFIED PLAYBOOKS:\n{playbooks or '[none]'}
 TASK:\n{component.task}
 TARGETS:\n{chr(10).join("- " + value for value in component.targets)}
 CONSTRAINTS:\n{chr(10).join("- " + value for value in component.constraints)}

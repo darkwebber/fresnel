@@ -37,6 +37,14 @@ def state_path() -> Path:
     return application_support() / "fresnel.sqlite3"
 
 
+def memory_dir() -> Path:
+    return application_support() / "memory"
+
+
+def blobs_dir() -> Path:
+    return memory_dir() / "blobs"
+
+
 @dataclass
 class Profile:
     name: str = "balanced"
@@ -88,8 +96,9 @@ class Config:
 
 
 def ensure_directories() -> None:
-    for path in (application_support(), cache_dir(), logs_dir()):
+    for path in (application_support(), cache_dir(), logs_dir(), memory_dir(), blobs_dir()):
         path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o700)
 
 
 def load_config(path: Path | None = None) -> Config:

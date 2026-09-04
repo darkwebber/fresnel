@@ -19,9 +19,17 @@ if ! command -v uv >/dev/null 2>&1; then
   brew install --yes uv
 fi
 
+if ! command -v glow >/dev/null 2>&1; then
+  brew install --yes glow
+fi
+
+if ! command -v termtex >/dev/null 2>&1; then
+  brew install --yes darkwebber/tap/termtex
+fi
+
 cd "$SCRIPT_DIR"
 shasum -a 256 -c SHA256SUMS
-uv tool install --force ./fresnel_agent-0.2.0-py3-none-any.whl
+uv tool install --force ./fresnel_agent-0.4.0-py3-none-any.whl
 
 if ! command -v fresnel >/dev/null 2>&1; then
   echo "Fresnel was installed, but its bin directory is not on PATH." >&2

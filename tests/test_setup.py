@@ -26,3 +26,22 @@ def test_model_snapshot_requires_weights(tmp_path, monkeypatch):
     assert setup.model_snapshot() is None
     (root / "model.safetensors").write_text("weights")
     assert setup.model_snapshot() == root
+
+
+def test_doctor_reports_optional_output_helpers_without_becoming_unhealthy(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(setup, "detect", lambda: type("Hardware", (), {
+        "thermal_state": "nominal",
+        "json": lambda self: {},
+    })())
+    monkeypatch.setattr(setup, "validate_supported", lambda _hardware: [])
+    monkeypatch.setattr(setup, "load_config", lambda: Config(model_path=str(tmp_path)))
+    monkeypatch.setattr(setup, "runtime_executable", lambda _name: "/bin/server")
+    monkeypatch.setattr(setup, "model_snapshot", lambda: None)
+    monkeypatch.setattr(setup, "memory_free_percent", lambda: 80)
+    monkeypatch.setattr(setup.shutil, "which", lambda _name: None)
+    result = setup.doctor()
+    assert result["healthy"] is True
+    assert result["output_tools"]["glow"] is None
+    assert any("terminal output helpers" in warning for warning in result["warnings"])

@@ -21,6 +21,7 @@ from .budget import allocate
 from .config import Config, environment_key
 from .hardware import memory_free_percent
 from .learning import classify_failure, signature
+from .memory import Memory
 from .protocol import Component, Plan, parse_plan, safe_path
 from .references import (
     exa_reference,
@@ -29,6 +30,7 @@ from .references import (
     pydoc_reference,
     render_packet,
 )
+from .repository import RepositoryIndex
 from .router import shadow_route
 from .store import Store
 from .worker import WorkerTruncated, apply_operations, render_prompt
@@ -338,6 +340,7 @@ def run(
     repo = repo.resolve()
     decisions = decisions or {}
     store = store or Store()
+    memory = Memory(store)
     run_id = store.new_run(request or plan.objective, config.active_worker)
     store.event(run_id, "PLANNED", {"objective": plan.objective})
     targets = tuple(
@@ -345,6 +348,23 @@ def run(
     )
     contracts = tuple(contract.path for contract in plan.contracts)
     assembled = tuple(dict.fromkeys(targets + contracts))
+    memory.create_charter(
+        run_id,
+        repo,
+        plan.objective,
+        [item for component in plan.components for item in component.acceptance],
+        [item for component in plan.components for item in component.constraints],
+        list(assembled),
+    )
+    memory.event(
+        "TASK_STARTED",
+        {
+            "components": [component.id for component in plan.components],
+            "invariants": list(plan.review_checklist),
+        },
+        repo=repo,
+        run_id=run_id,
+    )
     hashes = {path: _digest(safe_path(repo, path)) for path in assembled}
     profile = config.selected_profile
     project_python = _project_python(repo)
@@ -366,6 +386,10 @@ def run(
         with tempfile.TemporaryDirectory(prefix="fresnel-") as temporary:
             work = Path(temporary) / "repo"
             _copy_repo(repo, work)
+            project_identifier, _project_root = memory.ensure_project(repo)
+            repository_index = RepositoryIndex(store, project_identifier, work)
+            index_metrics = repository_index.index()
+            report["memory"] = {"repository_index": index_metrics}
             for contract in plan.contracts:
                 path = safe_path(work, contract.path)
                 if path.exists():
@@ -375,7 +399,24 @@ def run(
             exa_key = environment_key("EXA_API_KEY", "exa-api-key")
             for component in plan.components:
                 store.event(run_id, "COMPONENT_RUNNING", {"component_id": component.id})
+                memory.event(
+                    "COMPONENT_STARTED",
+                    {"component_id": component.id, "task": component.task},
+                    repo=repo,
+                    run_id=run_id,
+                )
                 records, packet = _references(component, work, exa_key, project_python)
+                query = "\n".join(
+                    (component.task, *component.implementation, *component.acceptance)
+                )
+                retrieved = repository_index.evidence(
+                    query, excluded=set(component.targets + component.context)
+                )
+                repo_map = repository_index.repo_map(limit=60)
+                memory_context = "\n\n".join(
+                    part for part in ("REPOSITORY MAP\n" + repo_map if repo_map else "", retrieved) if part
+                )
+                packet = "\n\n".join(part for part in (packet, memory_context) if part)
                 component_result = {
                     "id": component.id,
                     "success": False,
@@ -384,6 +425,17 @@ def run(
                 }
                 feedback = ""
                 for number in range(1, profile.max_attempts + 1):
+                    state_row = store.connection.execute(
+                        "SELECT state_json FROM task_state WHERE run_id=?", (run_id,)
+                    ).fetchone()
+                    situation = state_row["state_json"] if state_row else ""
+                    playbook_rows = store.connection.execute(
+                        "SELECT trigger, rule FROM playbooks WHERE status='PROMOTED' "
+                        "ORDER BY updated_at DESC LIMIT 3"
+                    ).fetchall()
+                    playbooks = "\n".join(
+                        f"- IF {row['trigger']} THEN {row['rule']}" for row in playbook_rows
+                    )
                     initial_budget = allocate(
                         profile,
                         memory_free_percent=memory_free_percent(),
@@ -398,6 +450,8 @@ def run(
                         max_input_tokens=initial_budget.max_input_tokens,
                         response_budget=initial_budget.max_output_tokens,
                         attempt=number,
+                        situation=situation,
+                        playbooks=playbooks,
                     )
                     estimated_tokens = (len(prompt) + 3) // 4
                     budget = allocate(
@@ -426,11 +480,14 @@ def run(
                             min_p=profile.min_p,
                         )
                         elapsed = round(time.perf_counter() - started, 3)
+                        output_blob = memory.put_blob("worker_output", output) if output else None
                         attempt = {
                             "attempt": number,
                             "seconds": elapsed,
                             "usage": usage,
-                            "raw_output": output,
+                            "raw_output": output if len(output) <= 4096 else output[:4096],
+                            "output_blob": output_blob,
+                            "raw_output_truncated": len(output) > 4096,
                         }
                         fallback = component.targets[0] if len(component.targets) == 1 else None
                         kind, payload = parse_worker(output, fallback_target=fallback)
@@ -448,15 +505,29 @@ def run(
                             category,
                             {"attempt": number, "error": details},
                         )
+                        output_blob = memory.put_blob("worker_output", output) if output else None
                         component_result["attempts"].append(
                             {
                                 "attempt": number,
                                 "seconds": elapsed,
                                 "usage": usage,
-                                "raw_output": output,
+                                "raw_output": output if len(output) <= 4096 else output[:4096],
+                                "output_blob": output_blob,
+                                "raw_output_truncated": len(output) > 4096,
                                 "error": details,
                                 "budget": asdict(budget),
                             }
+                        )
+                        memory.event(
+                            "WORKER_FAILED",
+                            {
+                                "component_id": component.id,
+                                "attempt": number,
+                                "error": details,
+                                "output_blob": output_blob,
+                            },
+                            repo=repo,
+                            run_id=run_id,
                         )
                         if isinstance(exc, WorkerTruncated):
                             feedback = (
@@ -539,6 +610,12 @@ def run(
                             "one unique exact SEARCH block; missing targets require CREATE."
                         )
                         continue
+                    memory.event(
+                        "EDIT_APPLIED",
+                        {"component_id": component.id, "paths": list(component.targets)},
+                        repo=repo,
+                        run_id=run_id,
+                    )
                     passed, validation = _validation(
                         work, component.validation, python=project_python
                     )
@@ -546,8 +623,26 @@ def run(
                     attempt["budget"] = asdict(budget)
                     component_result["attempts"].append(attempt)
                     store.record_call(run_id, component.id, usage, attempt["seconds"], passed)
+                    validation_blob = memory.put_blob("validation", json.dumps(validation))
+                    memory.event(
+                        "VALIDATION",
+                        {
+                            "component_id": component.id,
+                            "passed": passed,
+                            "summary": "passed" if passed else "component validation failed",
+                            "blob": validation_blob,
+                        },
+                        repo=repo,
+                        run_id=run_id,
+                    )
                     if passed:
                         component_result["success"] = True
+                        memory.event(
+                            "COMPONENT_COMPLETED",
+                            {"component_id": component.id},
+                            repo=repo,
+                            run_id=run_id,
+                        )
                         break
                     feedback = (
                         "Repair only the failing behavior.\n"
@@ -593,10 +688,22 @@ def run(
             status = "AWAITING_APPROVAL"
         report["status"] = status
         store.finish(run_id, status, report)
+        memory.event(
+            "RUN_COMPLETED" if report["success"] else "RUN_FAILED",
+            {"status": status, "summary": status.lower().replace("_", " ")},
+            repo=repo,
+            run_id=run_id,
+        )
         return report
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
         report["metrics"] = _metrics(report, config)
         report["status"] = "FAILED"
         store.finish(run_id, "FAILED", report)
+        memory.event(
+            "RUN_FAILED",
+            {"status": "FAILED", "summary": report["error"]},
+            repo=repo,
+            run_id=run_id,
+        )
         return report

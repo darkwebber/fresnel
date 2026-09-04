@@ -44,6 +44,70 @@ CREATE TABLE IF NOT EXISTS benchmarks (
   id TEXT PRIMARY KEY, created_at REAL NOT NULL, hardware_json TEXT NOT NULL,
   results_json TEXT NOT NULL, selected_profile TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS schema_meta (
+  key TEXT PRIMARY KEY, value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY, root TEXT NOT NULL UNIQUE, created_at REAL NOT NULL,
+  updated_at REAL NOT NULL, git_head TEXT
+);
+CREATE TABLE IF NOT EXISTS task_charters (
+  id TEXT PRIMARY KEY, project_id TEXT, run_id TEXT, revision INTEGER NOT NULL,
+  goal TEXT NOT NULL, acceptance_json TEXT NOT NULL, constraints_json TEXT NOT NULL,
+  scope_json TEXT NOT NULL, base_commit TEXT, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_state (
+  run_id TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT, run_id TEXT, session_id TEXT,
+  created_at REAL NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memory_events_run_idx ON memory_events(run_id, id);
+CREATE INDEX IF NOT EXISTS memory_events_session_idx ON memory_events(session_id, id);
+CREATE TABLE IF NOT EXISTS memory_blobs (
+  id TEXT PRIMARY KEY, created_at REAL NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0, expires_at REAL, path TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_facts (
+  id TEXT PRIMARY KEY, project_id TEXT, run_id TEXT, kind TEXT NOT NULL, value_json TEXT NOT NULL,
+  source TEXT NOT NULL, source_hash TEXT, confidence REAL NOT NULL, valid INTEGER NOT NULL DEFAULT 1,
+  supersedes TEXT, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS response_sessions (
+  id TEXT PRIMARY KEY, project_id TEXT, name TEXT NOT NULL, system TEXT NOT NULL,
+  created_at REAL NOT NULL, updated_at REAL NOT NULL, status TEXT NOT NULL,
+  UNIQUE(project_id, name)
+);
+CREATE TABLE IF NOT EXISTS response_segments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+  segment INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
+  finish_reason TEXT, usage_json TEXT NOT NULL, created_at REAL NOT NULL,
+  UNIQUE(turn_id, segment, role)
+);
+CREATE TABLE IF NOT EXISTS playbooks (
+  id TEXT PRIMARY KEY, scope_json TEXT NOT NULL, trigger TEXT NOT NULL, rule TEXT NOT NULL,
+  evidence_json TEXT NOT NULL, status TEXT NOT NULL, created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS integration_installs (
+  product TEXT NOT NULL, project_root TEXT NOT NULL, destination TEXT NOT NULL,
+  version TEXT NOT NULL, checksum TEXT NOT NULL, updated_at REAL NOT NULL,
+  PRIMARY KEY(product, project_root, destination)
+);
+CREATE TABLE IF NOT EXISTS repository_files (
+  project_id TEXT NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL,
+  language TEXT NOT NULL, indexed_at REAL NOT NULL,
+  PRIMARY KEY(project_id, path)
+);
+CREATE TABLE IF NOT EXISTS repository_symbols (
+  project_id TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,
+  start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, signature TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS repository_symbols_name_idx ON repository_symbols(project_id, name);
+CREATE VIRTUAL TABLE IF NOT EXISTS repository_fts USING fts5(
+  project_id UNINDEXED, path UNINDEXED, content
+);
 """
 
 
@@ -54,6 +118,10 @@ class Store:
         self.connection = sqlite3.connect(self.path)
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript(SCHEMA)
+        self.connection.execute(
+            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('memory_schema', '1')"
+        )
+        self.connection.commit()
 
     def close(self) -> None:
         self.connection.close()
@@ -161,3 +229,42 @@ class Store:
             "SELECT id, created_at, signature, status, proposal_json, evaluation_json FROM improvements ORDER BY created_at DESC"
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def memory_event(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        project_id: str | None = None,
+        run_id: str | None = None,
+        session_id: str | None = None,
+    ) -> int:
+        cursor = self.connection.execute(
+            "INSERT INTO memory_events(project_id, run_id, session_id, created_at, kind, payload_json) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (project_id, run_id, session_id, time.time(), kind, json.dumps(payload)),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def memory_events(
+        self, *, run_id: str | None = None, session_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        if run_id:
+            rows = self.connection.execute(
+                "SELECT * FROM memory_events WHERE run_id=? ORDER BY id", (run_id,)
+            ).fetchall()
+        elif session_id:
+            rows = self.connection.execute(
+                "SELECT * FROM memory_events WHERE session_id=? ORDER BY id", (session_id,)
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                "SELECT * FROM memory_events ORDER BY id DESC LIMIT 100"
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item.pop("payload_json"))
+            result.append(item)
+        return result

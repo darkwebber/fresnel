@@ -13,7 +13,7 @@ from .setup import doctor, install_service, server_healthy
 PRODUCTS = (
     ("codex", "Codex", "global skill"),
     ("cursor", "Cursor", "project rule"),
-    ("opencode", "OpenCode", "project agent"),
+    ("opencode", "OpenCode", "project skill"),
     ("generic", "Other", "portable FRESNEL.md"),
     ("skip", "Not now", "show manual commands"),
 )
@@ -90,6 +90,13 @@ def run_onboarding(
         f"{profile.context_window:,} context · {profile.max_output_tokens:,} output · "
         f"temperature {profile.temperature:g}"
     )
+    output_tools = status.get("output_tools", {})
+    if output_tools:
+        ready = [name for name, path in output_tools.items() if path]
+        output(
+            f"  {_paint('✓' if len(ready) == len(output_tools) else '•', '32', color)} "
+            f"Terminal   {', '.join(ready) if ready else 'plain Markdown fallback'}"
+        )
     if status["problems"]:
         for problem in status["problems"]:
             output(f"  {_paint('!', '31', color)} {problem}")
@@ -148,7 +155,8 @@ def run_onboarding(
         output("  Integration: skipped; run `fresnel integrations install --help` later.")
     output("\nTry this in your orchestrator:")
     output(_paint('  “Use Fresnel to implement a small, well-tested change in this project.”', "36", color))
-    output("\nUseful checks:  fresnel doctor --json   ·   fresnel status")
+    output("\nTry the worker:  fresnel ask \"Explain a small PySpark transformation\"")
+    output("Useful checks:    fresnel doctor --json   ·   fresnel status")
 
     return {
         "completed": True,
