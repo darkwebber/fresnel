@@ -1,4 +1,6 @@
-from fresnel import benchmark
+import pytest
+
+from fresnel import benchmark, config
 from fresnel.config import Config, load_config, save_config
 from fresnel.hardware import Hardware
 
@@ -20,6 +22,13 @@ def test_profiles_reserve_context():
             <= values["context_window"]
         )
     assert profiles["balanced"]["context_window"] == 24576
+
+
+def test_keychain_is_explicitly_macos_only(monkeypatch):
+    monkeypatch.setattr(config.platform, "system", lambda: "Linux")
+    assert config.keychain_get("exa-api-key") is None
+    with pytest.raises(RuntimeError, match="only available on macOS"):
+        config.keychain_set("exa-api-key", "secret")
 
 
 def test_calibrate_stops_on_pressure(monkeypatch):

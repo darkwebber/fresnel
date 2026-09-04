@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -99,6 +100,8 @@ def save_config(config: Config, path: Path | None = None) -> Path:
 
 
 def keychain_set(account: str, value: str) -> None:
+    if platform.system() != "Darwin":
+        raise RuntimeError("macOS Keychain is only available on macOS")
     subprocess.run(
         ["security", "add-generic-password", "-U", "-s", "fresnel", "-a", account, "-w", value],
         check=True,
@@ -107,6 +110,8 @@ def keychain_set(account: str, value: str) -> None:
 
 
 def keychain_get(account: str) -> str | None:
+    if platform.system() != "Darwin":
+        return None
     completed = subprocess.run(
         ["security", "find-generic-password", "-s", "fresnel", "-a", account, "-w"],
         text=True,
