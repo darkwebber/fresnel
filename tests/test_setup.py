@@ -14,6 +14,23 @@ def test_available_port_and_server_command(tmp_path, monkeypatch):
     assert '{"enable_thinking":false}' in command
 
 
+def test_runtime_install_uses_upgrade_stable_application_support(tmp_path, monkeypatch):
+    commands = []
+    monkeypatch.setattr(setup, "runtime_dir", lambda: tmp_path / "runtime")
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(setup.subprocess, "run", lambda command, **_kwargs: commands.append(command))
+    monkeypatch.setattr(setup, "runtime_executable", lambda _name: "/stable/spark-mlx-server")
+    setup.install_runtime()
+    assert commands[0] == [
+        "/bin/uv",
+        "venv",
+        "--python",
+        setup.sys.executable,
+        str(tmp_path / "runtime"),
+    ]
+    assert commands[1][3:5] == ["--python", str(tmp_path / "runtime/bin/python")]
+
+
 def test_model_snapshot_requires_weights(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     root = (

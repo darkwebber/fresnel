@@ -1,6 +1,6 @@
 # macOS setup
 
-This reference ships with Fresnel contract 0.4.0.
+This reference ships with Fresnel contract 0.4.1.
 
 Fresnel supports Apple Silicon macOS with at least 16 GB unified memory. The default worker is the revision-pinned `abenzerps/Spark-X2.5-4B-MLX-8bit` checkpoint and pinned Spark MLX runtime.
 

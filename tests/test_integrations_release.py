@@ -66,7 +66,7 @@ def test_opencode_uses_skill_path_and_backs_up_legacy_agent(tmp_path):
 
 def test_contract_is_versioned_and_exposed_over_mcp():
     contract = integrations.contract_data()
-    assert contract["contract_version"] == "0.4.0"
+    assert contract["contract_version"] == "0.4.1"
     assert "fresnel_contract" in {tool["name"] for tool in mcp_server.definitions()}
     assert mcp_server.command("fresnel_contract", {}) == [
         "fresnel",

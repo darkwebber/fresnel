@@ -1,6 +1,6 @@
 # Protocol v1
 
-This reference ships with Fresnel contract 0.4.0.
+This reference ships with Fresnel contract 0.4.1.
 
 A plan is JSON with `protocol_version`, `objective`, `contracts`, ordered `components`, `integration_validation`, and `review_checklist`.
 

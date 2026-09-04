@@ -23,6 +23,7 @@ from .config import (
     ensure_directories,
     load_config,
     logs_dir,
+    runtime_dir,
     save_config,
 )
 from .hardware import detect, memory_free_percent, validate_supported
@@ -30,6 +31,9 @@ from .hardware import detect, memory_free_percent, validate_supported
 
 def runtime_executable(name: str) -> str | None:
     """Find a runtime command in Fresnel's private environment or the user PATH."""
+    stable = runtime_dir() / "bin" / name
+    if stable.is_file() and os.access(stable, os.X_OK):
+        return str(stable)
     private = Path(sys.executable).parent / name
     if private.is_file() and os.access(private, os.X_OK):
         return str(private)
@@ -78,22 +82,42 @@ def available_port(preferred: int = 8081) -> int:
     raise RuntimeError("no free loopback port found between 8081 and 8100")
 
 
-def install_runtime(*, dry_run: bool = False) -> list[str]:
+def install_runtime(*, dry_run: bool = False) -> list[list[str]]:
     requirement = f"git+{RUNTIME_REPO}@{RUNTIME_REVISION}"
     uv = shutil.which("uv")
-    command = (
-        [uv, "pip", "install", "--python", sys.executable, requirement, "huggingface-hub>=0.34,<2"]
-        if uv
-        else [sys.executable, "-m", "pip", "install", requirement, "huggingface-hub>=0.34,<2"]
-    )
+    environment = runtime_dir()
+    runtime_python = environment / "bin" / "python"
+    if uv:
+        create = [uv, "venv", "--python", sys.executable, str(environment)]
+        command = [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(runtime_python),
+            requirement,
+            "huggingface-hub>=0.34,<2",
+        ]
+    else:
+        create = [sys.executable, "-m", "venv", str(environment)]
+        command = [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "install",
+            requirement,
+            "huggingface-hub>=0.34,<2",
+        ]
     if not dry_run:
+        ensure_directories()
+        subprocess.run(create, check=True)
         subprocess.run(command, check=True)
         if not runtime_executable("spark-mlx-server"):
             raise RuntimeError(
                 "Spark runtime installed but its server entry point was not created in "
-                f"{Path(sys.executable).parent}"
+                f"{environment / 'bin'}"
             )
-    return command
+    return [create, command]
 
 
 def download_model(*, dry_run: bool = False) -> Path:
@@ -244,7 +268,7 @@ def guided_setup(
     if problems:
         raise RuntimeError("; ".join(problems))
     actions = []
-    if not shutil.which("spark-mlx-server"):
+    if not runtime_executable("spark-mlx-server"):
         if not confirm("Install the pinned Spark MLX runtime and Hugging Face downloader?"):
             raise RuntimeError("Spark runtime installation was declined")
         actions.append({"runtime_command": install_runtime(dry_run=dry_run)})

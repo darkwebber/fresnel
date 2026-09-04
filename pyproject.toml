@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fresnel-agent"
-version = "0.4.0"
+version = "0.4.1"
 description = "Mac-native orchestration harness for bounded local coding agents"
 readme = "README.md"
 requires-python = ">=3.11"

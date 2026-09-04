@@ -1,6 +1,6 @@
 # Approval policy
 
-This reference ships with Fresnel contract 0.4.0.
+This reference ships with Fresnel contract 0.4.1.
 
 Fresnel auto-approves bounded read-only inspection, local documentation, help commands, validation, edits inside declared targets, and domain-restricted Exa lookup when the plan authorizes worker web research.
 

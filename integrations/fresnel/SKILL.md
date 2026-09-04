@@ -5,7 +5,7 @@ description: Orchestrate cost-efficient local implementation through Fresnel whi
 
 # Fresnel
 
-Contract version: 0.4.0. The current external agent is Fresnel's brain and taste-maker.
+Contract version: 0.4.1. The current external agent is Fresnel's brain and taste-maker.
 Spark is a bounded implementation worker, never the architect or final reviewer.
 
 ## Workflow

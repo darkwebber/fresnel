@@ -45,6 +45,10 @@ def blobs_dir() -> Path:
     return memory_dir() / "blobs"
 
 
+def runtime_dir() -> Path:
+    return application_support() / "runtime" / RUNTIME_REVISION
+
+
 @dataclass
 class Profile:
     name: str = "balanced"
@@ -96,7 +100,14 @@ class Config:
 
 
 def ensure_directories() -> None:
-    for path in (application_support(), cache_dir(), logs_dir(), memory_dir(), blobs_dir()):
+    for path in (
+        application_support(),
+        cache_dir(),
+        logs_dir(),
+        memory_dir(),
+        blobs_dir(),
+        runtime_dir(),
+    ):
         path.mkdir(parents=True, exist_ok=True)
         path.chmod(0o700)
 
