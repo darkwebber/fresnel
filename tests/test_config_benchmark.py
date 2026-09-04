@@ -51,7 +51,10 @@ def test_calibrate_stops_on_pressure(monkeypatch):
         }
 
     monkeypatch.setattr(benchmark, "request", fake_request)
-    result = benchmark.calibrate("http://local", quick=True)
+    events = []
+    result = benchmark.calibrate("http://local", quick=True, progress=events.append)
     assert result["selected_profile"] == "balanced"
     assert result["results"][0]["probe"] == "warmup"
     assert any(item["probe"] == "repeated_prompt_cache" for item in result["results"])
+    assert events[0] == {"state": "started", "label": "Loading model and warming up", "probe": "warmup"}
+    assert events[-1]["state"] == "finished"

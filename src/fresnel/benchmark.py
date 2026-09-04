@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 import urllib.request
+from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
 
@@ -13,6 +14,7 @@ from .hardware import detect, memory_free_percent, swap_used, thermal_state
 
 CONTEXT_CANDIDATES = (4096, 8192, 16384, 24576, 32768)
 OUTPUT_CANDIDATES = (512, 1024, 2048, 4096, 8192)
+Progress = Callable[[dict[str, Any]], None]
 
 
 def tokenish_prompt(tokens: int) -> str:
@@ -82,26 +84,58 @@ def select_profiles(maximum_context: int, maximum_output: int) -> dict[str, dict
     }
 
 
-def calibrate(endpoint: str, *, quick: bool = False) -> dict[str, Any]:
+def calibrate(
+    endpoint: str, *, quick: bool = False, progress: Progress | None = None
+) -> dict[str, Any]:
     hardware = detect()
     contexts = (4096, 8192) if quick else CONTEXT_CANDIDATES
+    outputs = (512, 2048) if quick else OUTPUT_CANDIDATES
+    progress = progress or (lambda _event: None)
+
+    def probe(label: str, prompt: str, output: int, **metadata: Any) -> dict[str, Any]:
+        progress({"state": "started", "label": label, **metadata})
+        started = time.perf_counter()
+        try:
+            result = request(endpoint, prompt, output)
+        except Exception as exc:
+            progress(
+                {
+                    "state": "failed",
+                    "label": label,
+                    "seconds": round(time.perf_counter() - started, 3),
+                    "error": f"{type(exc).__name__}: {exc}",
+                    **metadata,
+                }
+            )
+            raise
+        progress({"state": "completed", "label": label, **metadata, **result})
+        return result
+
     # Model loading is lazy in MLX LM. Exclude that one-time allocation and
     # compilation cost from context-pressure decisions.
-    warmup = request(endpoint, "Warm up the model.", 8)
+    warmup = probe("Loading model and warming up", "Warm up the model.", 8, probe="warmup")
     warmup["probe"] = "warmup"
     results = [warmup]
     maximum_context = 4096
     last_prompt = tokenish_prompt(4096 - 128)
     for context in contexts:
         last_prompt = tokenish_prompt(context - 128)
-        probe = request(endpoint, last_prompt, 8)
-        probe["probe"] = "context"
-        probe["target_context"] = context
-        results.append(probe)
-        if not safe(probe):
+        result = probe(
+            f"Testing {context:,}-token context",
+            last_prompt,
+            8,
+            probe="context",
+            target_context=context,
+        )
+        result["probe"] = "context"
+        result["target_context"] = context
+        results.append(result)
+        if not safe(result):
             break
         maximum_context = context
-    cache_probe = request(endpoint, last_prompt, 8)
+    cache_probe = probe(
+        "Checking repeated-prompt cache", last_prompt, 8, probe="repeated_prompt_cache"
+    )
     cache_probe["probe"] = "repeated_prompt_cache"
     prior = results[-1]
     cache_probe["latency_speedup"] = (
@@ -109,18 +143,33 @@ def calibrate(endpoint: str, *, quick: bool = False) -> dict[str, Any]:
     )
     results.append(cache_probe)
     maximum_output = 512
-    for output in (512, 2048) if quick else OUTPUT_CANDIDATES:
+    for output in outputs:
         if output + 1024 >= maximum_context:
             break
-        probe = request(endpoint, "Health check only.", output)
-        probe["probe"] = "output_ceiling"
-        probe["target_output_limit"] = output
-        results.append(probe)
-        if not safe(probe):
+        result = probe(
+            f"Testing {output:,}-token output reserve",
+            "Health check only.",
+            output,
+            probe="output_ceiling",
+            target_output_limit=output,
+        )
+        result["probe"] = "output_ceiling"
+        result["target_output_limit"] = output
+        results.append(result)
+        if not safe(result):
             break
         maximum_output = output
     profiles = select_profiles(maximum_context, maximum_output)
     selected = "eco" if hardware.power_source == "battery" else "balanced"
+    progress(
+        {
+            "state": "finished",
+            "label": "Calibration complete",
+            "selected_profile": selected,
+            "maximum_context": maximum_context,
+            "maximum_output": maximum_output,
+        }
+    )
     return {
         "hardware": hardware.json(),
         "results": results,

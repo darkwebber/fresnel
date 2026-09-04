@@ -18,6 +18,7 @@ from .integrations import uninstall as uninstall_integration
 from .learning import propose
 from .mcp_server import serve as serve_mcp
 from .onboarding import run_onboarding
+from .progress import BenchmarkProgress
 from .protocol import parse_plan
 from .release import homebrew_formula
 from .router import shadow_route
@@ -41,14 +42,16 @@ def load_decisions(path: Path | None) -> dict[str, str]:
 
 
 def cmd_setup(args) -> int:
-    result = guided_setup(
-        assume_yes=args.yes,
-        dry_run=args.dry_run,
-        skip_benchmark=args.skip_benchmark,
-        quick_benchmark=args.quick,
-        with_service=args.service,
-    )
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    with BenchmarkProgress(enabled=interactive and not args.skip_benchmark) as progress:
+        result = guided_setup(
+            assume_yes=args.yes,
+            dry_run=args.dry_run,
+            skip_benchmark=args.skip_benchmark,
+            quick_benchmark=args.quick,
+            with_service=args.service,
+            progress=progress,
+        )
     if interactive and not args.yes and not args.dry_run and not args.no_onboard:
         result["onboarding"] = run_onboarding()
         return 0 if result["onboarding"]["completed"] else 1
@@ -86,14 +89,25 @@ def cmd_serve(_args) -> int:
 def cmd_benchmark(args) -> int:
     config = load_config()
     endpoint = f"http://{config.host}:{config.port}/v1/chat/completions"
-    result = calibrate(endpoint, quick=args.quick)
+    interactive = sys.stderr.isatty() and not args.json
+    with BenchmarkProgress(enabled=interactive) as progress:
+        result = calibrate(endpoint, quick=args.quick, progress=progress)
     config.profiles = result["profiles"]
     config.profile = result["selected_profile"]
     save_config(config)
     store = Store()
     store.record_benchmark(result["hardware"], result["results"], result["selected_profile"])
     store.connection.close()
-    emit(result)
+    if args.json or not sys.stdout.isatty():
+        emit(result)
+    else:
+        selected = result["profiles"][result["selected_profile"]]
+        print(f"Saved profile: {result['selected_profile']}")
+        print(
+            f"Limits: {selected['context_window']:,} context · "
+            f"{selected['max_output_tokens']:,} output"
+        )
+        print("Inspect anytime with `fresnel doctor --json`.")
     return 0
 
 

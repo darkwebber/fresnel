@@ -218,6 +218,7 @@ def guided_setup(
     quick_benchmark: bool = False,
     with_service: bool = False,
     confirm: Callable[[str], bool] | None = None,
+    progress: Callable[[dict], None] | None = None,
 ) -> dict:
     confirm = confirm or (
         lambda question: (
@@ -263,6 +264,7 @@ def guided_setup(
             benchmark_result = calibrate(
                 f"http://{config.host}:{config.port}/v1/chat/completions",
                 quick=quick_benchmark,
+                progress=progress,
             )
             config.profiles = benchmark_result["profiles"]
             config.profile = benchmark_result["selected_profile"]
