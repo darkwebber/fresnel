@@ -4,7 +4,7 @@ class Fresnel < Formula
   desc "Mac-native orchestration harness for bounded local coding agents"
   homepage "https://github.com/darkwebber/fresnel"
   url "https://github.com/darkwebber/fresnel/releases/download/v0.5.0/fresnel_agent-0.5.0.tar.gz"
-  sha256 "5ac5974255f44ec3d26fd041fcc22c3bd55513a4ec3a57091afaf8da55808917"
+  sha256 "2e201844b57b87e4a46231fa6af51cb6ec66e691da7be5521223f75e6b79549f"
   license "Apache-2.0"
 
   depends_on arch: :arm64

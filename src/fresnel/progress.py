@@ -54,6 +54,16 @@ class BenchmarkProgress:
         state = event["state"]
         if self.linear:
             label = self._display_label(event)
+            if state == "finished":
+                label = (
+                    f"{event['label']}: {event['selected_profile']} profile "
+                    f"({event['maximum_context']:,} context / "
+                    f"{event['maximum_output']:,} output)"
+                )
+            elif state == "completed":
+                cache = event.get("cached_tokens", 0)
+                if cache:
+                    label += f" · cached {cache:,}"
             if label != self._last_linear_label or state in {"completed", "failed", "finished"}:
                 marker = "✓" if state in {"completed", "finished"} else "✗" if state == "failed" else "•"
                 self.stream.write(f"{marker} {label}\n")
@@ -86,7 +96,7 @@ class BenchmarkProgress:
                 label += f" · {current:g}/{total:g}"
         free = event.get("memory_free_percent")
         if free is not None:
-            label += f" · memory {free}%"
+            label += f" · memory free {free}%"
         eta = event.get("eta_seconds", "absent")
         if eta is None:
             return label + " · ETA estimating"
