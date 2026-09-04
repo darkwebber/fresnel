@@ -26,7 +26,7 @@ def test_homebrew_formula_is_pinned():
         "a" * 64,
         homepage="https://example.test/fresnel",
     )
-    assert 'version "0.1.0"' in formula
+    assert "fresnel.tar.gz" in formula
     assert 'sha256 "' + "a" * 64 + '"' in formula
     assert "virtualenv_install_with_resources" in formula
     assert 'homepage "https://example.test/fresnel"' in formula

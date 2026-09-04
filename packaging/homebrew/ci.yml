@@ -1,0 +1,24 @@
+name: Homebrew
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tap repository
+        run: brew tap darkwebber/tap "$GITHUB_WORKSPACE"
+      - name: Style
+        run: brew style --formula darkwebber/tap/fresnel
+      - name: Audit
+        run: brew audit --strict --online darkwebber/tap/fresnel
+      - name: Install and test
+        run: |
+          HOMEBREW_NO_INSTALL_FROM_API=1 brew install --build-from-source darkwebber/tap/fresnel
+          brew test darkwebber/tap/fresnel

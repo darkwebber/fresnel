@@ -18,7 +18,6 @@ def homebrew_formula(
   homepage "{homepage}"
   url "{url}"
   sha256 "{sha256}"
-  version "{version}"
   license "Apache-2.0"
 
   depends_on arch: :arm64
