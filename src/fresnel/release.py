@@ -21,10 +21,10 @@ def homebrew_formula(
   license "Apache-2.0"
 
   depends_on arch: :arm64
+  depends_on "darkwebber/tap/termtex"
+  depends_on "glow"
   depends_on "python@3.13"
   depends_on "uv"
-  depends_on "glow"
-  depends_on "darkwebber/tap/termtex"
 
   def install
     virtualenv_install_with_resources
