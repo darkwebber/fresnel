@@ -56,7 +56,6 @@ Uninstall
 ---------
 
        fresnel uninstall
-       fresnel uninstall
 
 Model files are preserved by default so an uninstall does not unexpectedly
 delete a multi-gigabyte download.

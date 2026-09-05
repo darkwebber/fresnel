@@ -4,5 +4,13 @@
 __pycache__/
 *.py[cod]
 dist/
-benchmark-results/*.json
-!benchmark-results/summary.json
+# Generated run reports can contain private prompts and repository excerpts.
+benchmark-results/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.sqlite3
+*.sqlite3-*
+.DS_Store

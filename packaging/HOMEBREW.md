@@ -2,18 +2,17 @@
 
 ## Current distribution: a personal tap
 
-A personal tap has no Homebrew maintainer review queue. Create a public upstream
-repository and immutable GitHub release, then use the separate public
-repository named `homebrew-tap` containing `Formula/fresnel.rb`. Once both are
-pushed, testers can install immediately:
+Fresnel is distributed through [darkwebber/homebrew-tap](https://github.com/darkwebber/homebrew-tap).
+The formula snapshots in this repository are release-maintenance inputs, not
+the live tap. Users install with:
 
 ```bash
-brew install OWNER/tap/fresnel
+brew install --yes darkwebber/tap/fresnel
 ```
 
 Before pushing the formula:
 
-1. Replace the placeholder homepage with the canonical Fresnel repository.
+1. Confirm the version and canonical homepage match the intended release.
 2. Point `url` at the immutable versioned `fresnel_agent-*.tar.gz` release asset.
 3. Generate SHA-256 from that exact uploaded asset.
 4. Run `brew style --formula Formula/fresnel.rb`.
@@ -28,6 +27,16 @@ downloads the pinned MLX runtime and model during `fresnel setup`, not during
 Fresnel's tap also carries a reviewed, commit-pinned `termtex` formula. The
 Fresnel formula depends on that helper plus the official `glow` formula, so a
 normal tap installation includes the complete terminal presentation stack.
+
+## Release hygiene
+
+Build and test from a clean checkout. Never replace assets for an existing release;
+publish a new version for package changes. Keep model caches, local run databases,
+credentials, and raw experiment output out of archives. Native helpers currently
+use ad-hoc signatures, not Developer ID signing or Apple notarization.
+
+Historical `RELEASE_NOTES_*.md` files describe their respective versions, not the
+current support contract. User instructions belong in the README and docs.
 
 ## Later: homebrew/core
 

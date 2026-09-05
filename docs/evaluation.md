@@ -43,6 +43,9 @@ state. A repeated-prompt speedup is not a general inference speedup.
 
 ## Existing IR feasibility trial
 
+See [benchmark assets](../benchmarks/README.md) for runnable experiments versus
+historical results and plans with missing external fixtures.
+
 Spark 4B 8-bit, temperature 0.15, 768 output tokens/call, two stdlib Python tasks,
 identical behavioral gates, at most one repair per task:
 

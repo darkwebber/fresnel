@@ -1,63 +1,41 @@
 # Fresnel
 
-### Precise plans. Local implementation. Verified results.
+**Your coding agent plans. A local model implements. You review the result.**
 
-**In 30 seconds:** Fresnel helps your coding agent delegate small, well-defined
-jobs to a local model on your Mac. The orchestrator designs and reviews. Fresnel
-manages tools, context, budgets, tests and recovery. Spark writes the code.
-Use `fresnel ask` for questions; use `fresnel run` for reviewed project changes.
+Fresnel lets an orchestrator such as Codex, Cursor, or OpenCode delegate small,
+precisely specified coding tasks to Spark on your Mac. It manages the worker's
+context, tools, resource budgets, validation, and recovery—not your architecture.
 
-> **Experimental:** Apple Silicon macOS 14+, at least 16 GB unified memory.
-> Production worker: Spark-X2.5-4B-MLX-8bit. Windows/Linux runtime ports and Claude
-> Code integration are open work. Broad net cost savings are not yet established.
+The goal is to spend fewer paid-model tokens on implementation without giving up
+review. Net cost savings are still being evaluated; local inference also costs
+time, memory, and power.
+
+> **Experimental · Apple Silicon · macOS 14+ · 16 GB+ unified memory**
+> The supported worker is Spark-X2.5-4B-MLX-8bit. Model weights are downloaded
+> separately during setup. Windows/Linux runtimes and a dedicated Claude Code
+> adapter are not yet supported.
+
+## How it works
 
 ```mermaid
 flowchart LR
-    U[Your goal] --> O[Orchestrator<br/>design + resolved IR]
-    O --> F[Fresnel<br/>scope + tools + budgets]
-    F --> S[Local Spark<br/>bounded implementation]
-    S --> V[Compiler + behavioral tests]
-    V -->|Targeted repair| F
-    V -->|Passing evidence| R[Orchestrator review]
-    R --> A[Apply verified checkpoint]
+    A[Your task] --> B[Orchestrator: precise plan]
+    B --> C[Fresnel + local Spark: implement]
+    C --> D[Compiler + behavioral tests]
+    D -->|Failure evidence| C
+    D -->|Passing result| E[Orchestrator: review diff]
+    E --> F[Apply reviewed checkpoint]
 ```
 
-Text equivalent: goal → precise plan → local code → tests → repair if needed →
-review → apply. A passing compiler is not a substitute for behavioral tests.
+The orchestrator resolves interfaces, algorithms, edge cases, and acceptance
+tests before delegation. We call this a **resolved program IR**: a precise,
+language-neutral implementation plan, not another programming language.
+Spark implements one bounded component; failed checks drive targeted repairs
+within the budget. Passing tests still require a final semantic review.
 
-## Choose your depth
-
-| I want to… | Start here |
-|---|---|
-| Install quickly | [Homebrew install](#homebrew-install) |
-| Understand the architecture and roles | [Architecture and orchestration](docs/architecture.md) |
-| Complete a first delegation | [Workflow and troubleshooting](docs/workflows.md) |
-| Understand memory, preferences and learning | [Memory and privacy](docs/memory.md) |
-| Interpret benchmarks and resource measurements | [Evaluation and calibration](docs/evaluation.md) |
-| Contribute without downloading a model | [Contributor guide](CONTRIBUTORS.md) |
-
-## Where Fresnel fits
-
-| Useful starting point | Poor starting point |
-|---|---|
-| Bounded helper with an exact interface | Vague whole-application request |
-| Mechanical edit with independent tests | Large file beyond the output budget |
-| Explicit algorithm and boundary cases | Asking Spark to invent unfamiliar APIs |
-| Reviewable diff and recorded failures | Treating generated text as verified work |
-
-The 0.5.1 two-task trial favored resolved IR (2/2 first-pass versus 0/2 direct),
-but planner cost, energy and broad generalization were not measured.
-[Methods and limitations](docs/evaluation.md) matter more than a headline score.
-
-## Overview
-
-Fresnel is a Mac-native orchestration harness that lets strong coordinators such
-as Codex, Cursor, or OpenCode delegate bounded coding components to a local
-Spark 2.5 MLX worker. It owns contracts, references, approvals, durable
-workspaces, validation, assembly, recovery, and cost/quality metrics.
-
-Contributions are welcome: start with [CONTRIBUTORS.md](CONTRIBUTORS.md) for
-model-free development, architecture, testing, and scoped starter issues.
+Fresnel is best suited to small helpers, mechanical edits, and explicit algorithms
+with independent tests. It is not a substitute for designing a whole application
+or reviewing unfamiliar code.
 
 ## Homebrew install
 
@@ -66,193 +44,129 @@ brew install --yes darkwebber/tap/fresnel
 fresnel setup
 ```
 
-The explicit `--yes` avoids Homebrew 6's default confirmation prompt in
-embedded terminals. It does not disable tap-trust checks. Interactive setup
-finishes with a terminal walkthrough that configures the background worker and
-your Codex, Cursor, OpenCode, or generic integration.
+Setup installs the pinned runtime, downloads the model, calibrates initial
+budgets, and guides integration with your coding agent. Allow time and disk space
+for the model download; setup duration depends on your connection and hardware.
 
-Already ran setup and are wondering what comes next? Run:
+If you already installed Fresnel but haven't finished configuration, run
+`fresnel onboard`. Use `fresnel doctor` to check the installation.
 
-```bash
-fresnel onboard
-```
+## Your first delegation
 
-## Ask and sampling
+### 1. Connect your orchestrator
 
-Use the local model directly for a small one-off question:
-
-```bash
-fresnel ask "Write a PySpark expression that normalizes an email column"
-```
-
-Answers stream to the terminal by default. If the server reaches its token
-ceiling, Fresnel continues the same answer up to two times while preserving the
-original question. Use `--max-continuations 0` to disable continuation,
-`--no-stream` to buffer the answer, or `--json` for machine-readable call and
-budget metrics. Requested output is reduced automatically when context headroom
-or current Mac memory pressure makes the requested ceiling unsafe.
-
-In 0.5.1, continuation suffixes are checked before display rather than replaying a
-whole replacement. Some forced short-output continuations still fail; incomplete
-output is reported as such, not automatically copied or behaviorally validated.
-
-Fresnel keeps hardware pressure measurements at temperature 0 so repeated
-calibrations are comparable. Normal worker calls use the sampling values in the
-active profile (`balanced` defaults to temperature 0.15). Tune behavior locally:
-
-```bash
-fresnel tune
-fresnel config sampling --temperature 0.25 --top-p 0.9 --top-k 40
-```
-
-Per-question overrides are available through `fresnel ask --help`.
-
-For an explicit, repository-scoped conversation, name it and resume an
-interrupted answer without replaying the prompt:
-
-```bash
-fresnel ask --session migration "Plan the Scala migration"
-fresnel ask --session migration "Now implement the encoder"
-fresnel ask --session migration --resume
-```
-
-Interactive drafts use a temporary terminal screen. A completed answer is then
-rendered once through the pinned `termtex` math renderer and Glow, and its raw
-Markdown is copied to the clipboard. JSON, piped output, errors, and interrupted
-answers are never copied. Use `--render plain` or `--no-copy` to opt out.
-
-## Development install
-
-```bash
-./scripts/install-macos.sh
-```
-
-Or install directly:
-
-```bash
-uv tool install '.[setup]'
-fresnel setup
-```
-
-Run diagnostics and calibration:
-
-```bash
-fresnel doctor
-fresnel serve
-fresnel benchmark
-```
-
-`fresnel setup` checks Apple Silicon and memory, installs revision-pinned runtime
-and model artifacts, starts a temporary worker, and runs an adaptive 5–10 minute
-calibration. It saves `eco`, `balanced`, and `maximum` profiles; change one later
-with `fresnel config profile eco|balanced|maximum`. Credentials stay in macOS
-Keychain, not project files.
-
-Calibration output-reserve checks currently use short health responses, not sustained
-decode workloads. Treat profiles as starting budgets, not proven long-output capacity.
-See [measurement limitations](docs/evaluation.md).
-
-Delegate a reviewed plan without touching the real repository:
-
-```bash
-fresnel run --repo /path/to/repo --plan plan.json --output review.json
-fresnel review review.json
-```
-
-Interactive commands show a spinner, current phase, elapsed time, validation
-state, and an ETA once Fresnel has enough evidence to estimate one. Automation
-can request the same stream as newline-delimited events with `--progress json`.
-Each final run report also retains its progress history, so an orchestrator can
-replay status even if its client does not display live notifications.
-
-Fresnel uses the configured local snapshot path as the worker model ID. If an
-OpenAI-compatible server rejects that ID with HTTP 404, it retries once without
-the model field so the server can select its advertised default. The fallback
-is recorded in run metrics instead of being hidden.
-
-Use `--apply` only after reviewing a passing result. Fresnel currently routes
-all real worker calls to Spark 2.5 4B MLX 8-bit; future routing runs in shadow
-mode until benchmark evidence supports activation.
-
-## Small-model context management
-
-The coordinator owns the durable goal and plan. Every worker retry receives a
-small execution kernel, immutable component contract, compact current state, and
-only the most useful fresh evidence that fits the pressure-aware input budget.
-Fresnel restores hash-verified checkpoints in a durable workspace. Spark lazily
-discovers repository search, bounded excerpts, local docs, safe help, validation,
-environment inspection, and authorized Exa research. Local reads are
-auto-approved; undeclared paths, network access, secrets, and path escapes are
-rejected.
-
-Worker output that ends with `finish_reason=length` is never parsed or applied.
-The partial output is recorded for observability and Fresnel retries with a
-smaller-edit instruction. Input budgets shrink on retries and under memory
-pressure, while output headroom is calculated from the actual prompt instead of
-assuming the configured 4096-token default is always sufficient. Run reports
-include truncation retries, on-demand excerpt reads, and pressure events.
-
-Fresnel also stores a versioned task charter, append-only events, a deterministic
-current-situation view, sparse repository evidence, validation results, and
-content-addressed compressed raw artifacts. The compact state is retained;
-unpinned raw blobs expire after 30 days. Inspect, replay, pin, garbage-collect,
-or deliberately forget memory with `fresnel memory --help`.
-
-## Orchestrator integrations
+Choose the command for your coding agent. Replace `/absolute/project` with your
+project directory:
 
 ```bash
 fresnel integrations install codex
-fresnel integrations install cursor --project /path/to/repo
-fresnel integrations install opencode --project /path/to/repo
-fresnel integrations install generic --project /path/to/repo
+fresnel integrations install cursor --project /absolute/project
+fresnel integrations install opencode --project /absolute/project
 ```
 
-Every adapter points at the same protocol and CLI/MCP surface, so policy does
-not drift between products. Existing adapter files are backed up. Installations
-are reversible with `fresnel integrations uninstall ...`. Registered,
-unmodified adapters auto-sync across Fresnel upgrades; locally modified adapters
-are preserved and reported by `fresnel integrations status`, `diff`, and
-`repair`. `fresnel contract --format json` is the tool-neutral source of truth.
+These install the shared planning, delegation, and review instructions. For other
+tools, use the [generic CLI or MCP integration](docs/workflows.md). MCP hosts launch
+`fresnel mcp`; that process waits for protocol messages, not typed chat.
 
-`fresnel mcp` prints an immediate ready/waiting message when started directly in
-a terminal. Under Cursor or another MCP host it preserves stdout for JSON-RPC,
-then emits standard MCP progress notifications for planning, worker attempts,
-retries, validation, approvals, completion, and ETA. Integration rules require
-the orchestrator to relay these updates to the user instead of going silent.
+### 2. Ask for a small, testable change
 
-## Metrics and learning
+For example, give your orchestrator this request:
 
-Each run persists coordinator input/output tokens and estimated API cost, local
-worker input/output/cached tokens, attempts, latency, validation outcomes,
-approval events, and failure signatures in SQLite. Configure pricing with
-`fresnel config pricing --input USD_PER_MILLION --output USD_PER_MILLION`.
-`fresnel learn` proposes a harness change only after the same normalized failure
-appears at least three times across two runs. Reversible prompt, retrieval, and
-playbook candidates may be promoted only from shadow evidence whose regressions
-pass, new failures are zero, permission risk is unchanged, and token and latency
-increases are each at most 15%. Prior rules remain available for instant rollback;
-policy, code, sandbox, and permission changes remain manual.
+> Use Fresnel to add a Python `clamp(value, lower, upper)` helper. Return the
+> nearest bound for out-of-range values; reject inverted bounds. Define the
+> interface and independent tests, delegate implementation, then show me the diff,
+> validation results, retries, and token usage before applying it.
 
-These gates currently evaluate submitted evidence; independent evidence generation
-and verification are open work. [Memory and learning details](docs/memory.md).
+Your existing orchestrator can write the plan directly—no additional coordinator
+API is required. The optional `fresnel plan` command uses a separately configured
+coordinator API. See the [example plan](examples/smoke-plan.json) and
+[orchestrator handoff guide](integrations/fresnel/references/resolved-ir.md).
 
-The 8-bit worker currently has strengths declared for bounded Python edits,
-simple file creation, and mechanical repairs. Multi-model routing remains shadow
-only in v0.5, making future model additions observable before they affect work.
+### 3. Review, then apply
 
-Resume and observe a durable run without replaying generated prose:
+The underlying CLI workflow is below. Replace the uppercase placeholders with
+your paths and the run ID returned by Fresnel; keep the report outside the project.
 
 ```bash
-fresnel run --resume RUN_ID
-fresnel status --run RUN_ID --follow
-fresnel cancel RUN_ID
+fresnel run --repo REPO --plan PLAN.json --output REPORT.json
+fresnel review REPORT.json
+# Only after reviewing a passing result:
+fresnel run --resume RUN_ID --apply
 ```
 
-The included three-task standard suite can be rerun with
-`scripts/run-standard-benchmark.sh /path/to/harness_eval`. The measured v0.1
-result and comparison with earlier runs are saved in
-`benchmark-results/summary.json`.
+Implementation happens in a separate durable workspace. Resuming the reviewed run
+applies its checkpoint instead of asking the model to generate a new version.
 
-Build a small shareable tester archive with `scripts/build-tester-bundle.sh`.
-The model is deliberately not embedded; guided setup downloads and verifies the
-revision-pinned checkpoint on each tester's Mac.
+## Just ask a question
+
+```bash
+fresnel ask "Explain the difference between a PySpark repartition and coalesce"
+```
+
+Answers stream by default. Completed interactive answers are rendered with
+Glow/Termtex when available and copied to your clipboard. Use `--no-copy` to opt
+out, `--render plain` for plain rendering, or `--json` for machine-readable output.
+
+`ask` returns text; it does **not** run behavioral tests or apply project edits.
+Use `run` for validated implementation. Continuation is bounded and can still
+fail on truncated code; incomplete answers are reported and not automatically
+copied. [Sessions, output budgets, and recovery →](docs/workflows.md#questions-versus-edits)
+
+## Stay in control
+
+| Need | Command |
+|---|---|
+| Follow a run | `fresnel status --run RUN_ID --follow` |
+| Resume interrupted work | `fresnel run --resume RUN_ID` |
+| Cancel a run | `fresnel cancel RUN_ID` |
+| Inspect its stored context | `fresnel memory inspect --run RUN_ID` |
+| Select a lighter profile | `fresnel config profile eco` |
+| Adjust generation sampling | `fresnel config sampling --temperature 0.25 --top-p 0.9` |
+| Diagnose setup | `fresnel doctor` |
+
+CLI progress reports phases, attempts, validation, and elapsed time; ETA depends
+on available evidence. Orchestrators can request `--progress json` or use MCP
+notifications. If a host hides progress, the status command and run report retain it.
+
+Working state and evidence live outside the model's context. Each attempt receives
+a bounded selection rather than the whole conversation. Personalization inference
+is opt-in. Local worker inference does not make every workflow offline: optional
+coordinator APIs and authorized Exa research use external services. Never put
+secrets in plans or prompts. [Memory and privacy details →](docs/memory.md)
+
+## Current limitations
+
+- **Reliability:** small components and independent tests matter. Neither clean
+  Markdown nor a successful compile proves that an implementation is correct.
+- **Calibration:** current output-allowance probes use short responses. Profiles
+  are starting budgets, not proof of sustained long-output capacity.
+- **Efficiency:** early resolved-IR trials are small. Broad quality, total cost,
+  and energy improvements have not been established.
+- **Learning:** rule-promotion gates evaluate submitted evidence; independently
+  reproducible learning evaluations remain open work. Multi-model routing is
+  shadow-only, not active worker selection.
+
+See [evaluation methods and known gaps](docs/evaluation.md) for measurements and
+limitations, and [release notes](https://github.com/darkwebber/fresnel/releases)
+for version-specific changes.
+
+## Choose your depth
+
+| Guide | What you'll find |
+|---|---|
+| [Workflows and troubleshooting](docs/workflows.md) | Integration, plan/run/review/apply, sessions, recovery, common failures |
+| [Architecture](docs/architecture.md) | Responsibilities, contracts, execution lifecycle, source map |
+| [Memory, preferences, and learning](docs/memory.md) | Context selection, retention, consent, inspection, learning boundaries |
+| [Evaluation and calibration](docs/evaluation.md) | Reproducible measurements, existing evidence, resource caveats |
+| [Contributor guide](CONTRIBUTORS.md) | Model-free development, tests, engineering expectations, starter issues |
+
+## Contribute
+
+Help make local delegation more reliable, measurable, and pleasant to use.
+Contributions in testing, documentation, accessibility, integrations, and performance
+research are welcome—you don't need to download a model to get started.
+
+Start with the [contributor guide](CONTRIBUTORS.md) or browse
+[good first issues](https://github.com/darkwebber/fresnel/labels/good%20first%20issue).
+
+Licensed under [Apache 2.0](LICENSE).

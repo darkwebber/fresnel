@@ -1,4 +1,5 @@
 {
+  "status": "historical_worker_only_observation_not_reproducible_from_this_checkout",
   "model": "abenzerps/Spark-X2.5-4B-MLX-8bit",
   "suite": ["chunked", "sessionize", "sql_dedup"],
   "fresnel_v0_1": {
