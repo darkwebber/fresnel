@@ -3,8 +3,8 @@ class Fresnel < Formula
 
   desc "Mac-native orchestration harness for bounded local coding agents"
   homepage "https://github.com/darkwebber/fresnel"
-  url "https://github.com/darkwebber/fresnel/releases/download/v0.5.0/fresnel_agent-0.5.0.tar.gz"
-  sha256 "502971dc3e4d4d6a9af978f3ad2d8fe24baaa2fd02eabdd8d013f550f9d26038"
+  url "https://github.com/darkwebber/fresnel/releases/download/v0.5.1/fresnel_agent-0.5.1.tar.gz"
+  sha256 "092ff0d8d2e6c1ef45790255ca706a8ec8e1f5816e8c3762f05d3163d4590d05"
   license "Apache-2.0"
 
   depends_on arch: :arm64
@@ -24,7 +24,7 @@ class Fresnel < Formula
   end
 
   test do
-    assert_match "Fresnel 0.5.0", shell_output("#{bin}/fresnel --version")
+    assert_match "Fresnel 0.5.1", shell_output("#{bin}/fresnel --version")
     dashboard_input = <<~JSON
       {"healthy":true,"worker":"idle","chip":"Apple Silicon","memory_free_percent":50,
        "profile":"balanced","personalization":false,"runs":[]}

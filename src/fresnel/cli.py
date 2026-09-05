@@ -257,6 +257,7 @@ def cmd_ask(args) -> int:
                             streaming=not args.no_stream and not args.json,
                             on_text=write_delta if live else None,
                             on_segment_reset=draft.reset if live else None,
+                            on_progress=progress,
                             memory=memory,
                             session_name=args.session,
                             repo=Path.cwd(),

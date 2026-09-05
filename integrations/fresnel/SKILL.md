@@ -5,14 +5,14 @@ description: Orchestrate cost-efficient local implementation through Fresnel whi
 
 # Fresnel
 
-Contract version: 0.5.0 / protocol 1.1. The external agent is Fresnel's architect and reviewer.
+Contract version: 0.5.1 / protocol 1.1. The external agent is Fresnel's architect and reviewer.
 Spark is a bounded implementation worker, never the architect or final reviewer.
 
 ## Workflow
 
 1. Inspect the repository and understand the user's actual goal before delegation.
 2. Own the architecture, algorithms, interfaces, invariants, contracts, decomposition, dependencies, acceptance criteria, risk envelopes, and integration tests. Produce an ordered protocol-1.1 plan with small components; protocol 1.0 remains accepted.
-3. Give each component explicit targets, read-only context, constraints, required implementation details, validation argv arrays, and only earlier dependencies.
+3. Resolve each component into program IR: exact types/state layout, ordered operations, branches, errors, API contracts, and edge cases. Put this language-neutral IR in `implementation` with `interfaces`/`invariants`, not a complete source implementation. Supply explicit targets, read-only context, validation argv arrays, and only earlier dependencies. Read [resolved-ir.md](references/resolved-ir.md) for the handoff and targeted repair contract.
 4. Save the plan and pass it to `fresnel run --plan PLAN --repo REPO`.
 5. Let Fresnel resolve local documentation first and approved, domain-restricted Exa references only when the plan authorizes them.
 6. Review validation evidence and the complete diff. Use `--apply` only when implementation was requested and all quality gates pass.

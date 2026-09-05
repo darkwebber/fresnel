@@ -7,7 +7,7 @@ def homebrew_formula(
     version: str,
     url: str,
     sha256: str,
-    homepage: str = "https://github.com/fresnel-ai/fresnel",
+    homepage: str = "https://github.com/darkwebber/fresnel",
 ) -> str:
     if len(sha256) != 64 or any(char not in "0123456789abcdef" for char in sha256.lower()):
         raise ValueError("sha256 must contain 64 hexadecimal characters")
@@ -24,10 +24,16 @@ def homebrew_formula(
   depends_on "darkwebber/tap/termtex"
   depends_on "glow"
   depends_on "python@3.13"
-  depends_on "uv"
 
   def install
+    system "/usr/bin/swiftc", "-O", "-target", "arm64-apple-macosx14.0",
+           buildpath/"native/FresnelUI.swift", "-o", buildpath/"fresnel-ui"
+    system "/usr/bin/swiftc", "-O", "-target", "arm64-apple-macosx14.0",
+           buildpath/"native/FresnelSupervisor.swift", "-o", buildpath/"fresnel-supervisor"
+    system "/usr/bin/codesign", "--force", "--sign", "-", buildpath/"fresnel-ui"
+    system "/usr/bin/codesign", "--force", "--sign", "-", buildpath/"fresnel-supervisor"
     virtualenv_install_with_resources
+    bin.install buildpath/"fresnel-ui", buildpath/"fresnel-supervisor"
   end
 
   test do

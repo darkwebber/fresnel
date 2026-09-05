@@ -44,6 +44,10 @@ def stitch(existing: str, addition: str) -> str:
     addition = clean_segment(addition)
     if not existing:
         return addition
+    if addition.startswith(existing):
+        return addition
+    if len(addition) >= 32 and existing.startswith(addition):
+        return existing
     maximum = min(len(existing), len(addition), 2048)
     for size in range(maximum, 3, -1):
         if existing[-size:] == addition[:size]:
@@ -63,9 +67,18 @@ def _restarts_answer(existing: str, addition: str) -> bool:
 
 
 def markdown_incomplete(text: str) -> bool:
-    fences = len(re.findall(r"(?m)^\s*```", text))
+    opened = None
+    for line in text.splitlines():
+        match = re.match(r"^\s{0,3}(`{3,}|~{3,})(.*)$", line)
+        if not match:
+            continue
+        fence, suffix = match.groups()
+        if opened is None:
+            opened = fence
+        elif fence[0] == opened[0] and len(fence) >= len(opened) and not suffix.strip():
+            opened = None
     display_math = len(re.findall(r"(?<!\\)\$\$", text))
-    return fences % 2 == 1 or display_math % 2 == 1
+    return opened is not None or display_math % 2 == 1
 
 
 def _near_limit(usage: dict[str, Any], limit: int) -> bool:
@@ -76,12 +89,18 @@ def _near_limit(usage: dict[str, Any], limit: int) -> bool:
 def _continuation_messages(
     base: list[dict[str, str]], combined: str, *, character_limit: int
 ) -> list[dict[str, str]]:
+    structural_hint = (
+        " The draft has an unclosed code or math block. Supply the missing code/math and its closing delimiter; a completion marker alone is not a completion."
+        if markdown_incomplete(combined)
+        else ""
+    )
     full = [*base, {"role": "assistant", "content": combined}]
     if sum(len(item["content"]) for item in full) <= character_limit:
         return full + [
             {
                 "role": "user",
-                "content": "Continue exactly from the previous final character. Do not repeat text or add a continuation preamble. Complete the original request and emit the completion marker only when finished.",
+                "content": "Continue exactly from the previous final character, preserving needed whitespace. Return only the missing suffix, not a replacement. If inside a code block, continue its code without reopening a fence and close it with a bare fence only at the end. Do not repeat text or add a preamble. Complete the original request and emit the completion marker only when finished."
+                + structural_hint,
             }
         ]
     headings = re.findall(r"(?m)^#{1,6}\s+.+$", combined)
@@ -95,25 +114,8 @@ def _continuation_messages(
         },
         {
             "role": "user",
-            "content": "Continue exactly from the supplied response tail without repeating it. Complete the original request and emit the completion marker only when finished.",
-        },
-    ]
-
-
-def _replacement_messages(
-    base: list[dict[str, str]], partial: str, *, character_limit: int
-) -> list[dict[str, str]]:
-    tail = partial[-min(6000, max(1000, character_limit // 3)) :]
-    return [
-        *base,
-        {
-            "role": "system",
-            "content": "The previous draft was truncated or structurally incomplete. Its tail was:\n"
-            + tail,
-        },
-        {
-            "role": "user",
-            "content": "Return one complete corrected replacement answer from the beginning. Close all code and math blocks. Do not discuss the failed draft. Emit the completion marker only after the replacement is complete.",
+            "content": "Continue exactly from the supplied response tail without repeating it. Complete the original request and emit the completion marker only when finished."
+            + structural_hint,
         },
     ]
 
@@ -134,6 +136,7 @@ def generate_response(
     streaming: bool,
     on_text: Callable[[str], None] | None = None,
     on_segment_reset: Callable[[str], None] | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
     memory: Memory | None = None,
     session_name: str | None = None,
     repo: Path | None = None,
@@ -173,8 +176,16 @@ def generate_response(
     final_reason = None
     if session and memory and not resume:
         memory.add_response_segment(session["id"], turn_id, 0, "user", question, None, {})
-    replacement = False
     for index in range(max_continuations + 1):
+        if on_progress and (index or resume):
+            on_progress(
+                {
+                    "state": "started",
+                    "label": "Continuing response (checking suffix before display)",
+                    "attempt": index + 1,
+                    "total": max_continuations + 1,
+                }
+            )
         estimated_input = sum(len(item["content"]) for item in conversation) // 4
         budget = allocate(
             profile,
@@ -195,6 +206,7 @@ def generate_response(
                 delta: str,
                 parts: list[str] = segment_parts,
                 segment_number: int = segment_offset + index,
+                display_live: bool = not combined,
             ) -> None:
                 parts.append(delta)
                 if session and memory:
@@ -207,7 +219,9 @@ def generate_response(
                         "streaming",
                         {},
                     )
-                if on_text:
+                # Continuations are provisional until overlap/restart detection.
+                # Never replay an entire draft into the user's live terminal.
+                if on_text and display_live:
                     on_text(delta)
 
             try:
@@ -239,6 +253,16 @@ def generate_response(
                     segment_parts.append(result["content"])
                 break
             except (URLError, TimeoutError, ConnectionError, OSError):
+                if segment_parts:
+                    # Retain received bytes and continue them; retrying the same
+                    # request from scratch discards useful work and duplicates UI.
+                    result = {
+                        "content": "".join(segment_parts),
+                        "finish_reason": "length",
+                        "usage": {"completion_tokens": max(1, len("".join(segment_parts)) // 4)},
+                        "transport_interrupted": True,
+                    }
+                    break
                 if transport_attempt == 2:
                     raise
                 if on_segment_reset:
@@ -248,18 +272,14 @@ def generate_response(
         marker = COMPLETE_MARKER in raw
         cleaned = clean_segment(raw)
         restarted = _restarts_answer(combined, cleaned)
-        if replacement or restarted:
-            combined = cleaned
-            if session and memory:
-                memory.store.connection.execute(
-                    "DELETE FROM response_segments WHERE session_id=? AND turn_id=? "
-                    "AND role='assistant'",
-                    (session["id"], turn_id),
-                )
-                memory.store.connection.commit()
-                segment_offset = 1 - index
-        else:
-            combined = stitch(combined, cleaned)
+        previous = combined
+        # A changed-prefix restart cannot safely replace already accepted bytes.
+        # Keep the draft and report incomplete rather than silently lose code.
+        conflict = restarted and not (cleaned.startswith(combined) or combined.startswith(cleaned))
+        combined = previous if conflict else stitch(combined, cleaned)
+        accepted = combined[len(previous) :]
+        if previous and on_text and accepted:
+            on_text(accepted)
         usage = result.get("usage", {})
         used = int(usage.get("completion_tokens", 0) or 0)
         total_completion += used if used else max(1, len(raw) // 4)
@@ -279,12 +299,14 @@ def generate_response(
                 turn_id,
                 segment_offset + index,
                 "assistant",
-                cleaned,
+                accepted,
                 result.get("finish_reason"),
                 usage,
             )
         needs_more = (
-            result.get("finish_reason") == "length"
+            conflict
+            or (not accepted.strip() and not marker)
+            or result.get("finish_reason") == "length"
             or markdown_incomplete(combined)
             or (not marker and _near_limit(usage, call_tokens))
         )
@@ -295,31 +317,16 @@ def generate_response(
         if index == max_continuations:
             break
         character_limit = max(8000, budget.max_input_tokens * 4)
-        replacement = markdown_incomplete(combined) and (
-            result.get("finish_reason") == "stop" or len(cleaned.strip()) < 8
-        )
-        if replacement:
-            conversation = _replacement_messages(
-                base, combined, character_limit=character_limit
-            )
-        else:
-            conversation = _continuation_messages(
-                base, combined, character_limit=character_limit
-            )
-        if on_segment_reset:
-            on_segment_reset(combined)
+        conversation = _continuation_messages(base, combined, character_limit=character_limit)
     usage = {
-        "prompt_tokens": sum(int(call.get("usage", {}).get("prompt_tokens", 0) or 0) for call in calls),
+        "prompt_tokens": sum(
+            int(call.get("usage", {}).get("prompt_tokens", 0) or 0) for call in calls
+        ),
         "completion_tokens": sum(
             int(call.get("usage", {}).get("completion_tokens", 0) or 0) for call in calls
         ),
         "cached_tokens": sum(
-            int(
-                call.get("usage", {})
-                .get("prompt_tokens_details", {})
-                .get("cached_tokens", 0)
-                or 0
-            )
+            int(call.get("usage", {}).get("prompt_tokens_details", {}).get("cached_tokens", 0) or 0)
             for call in calls
         ),
     }

@@ -30,6 +30,8 @@ def contract_data() -> dict[str, Any]:
         "workflow": [
             "Inspect the repository and convert the user goal into an ordered protocol plan.",
             "Keep architecture, algorithms, interfaces, contracts, acceptance criteria, and integration tests under orchestrator control.",
+            "Resolve each component into language-neutral program IR before delegation: exact data layout and types, ordered state transitions, branch conditions, error behavior, API contracts, and boundary cases. Encode it in implementation plus interfaces/invariants; do not leave design choices to the worker or provide finished source to echo.",
+            "Compile and behavior-test generated source, then repair only the failing operation using the exact diagnostic, relevant source and invariant. Re-review IR if the specification itself is wrong; track planner effort separately from worker tokens.",
             "Delegate only narrow components with explicit targets, context, implementation details, and validation commands.",
             "Estimate output size before delegation; split large modules into bounded functions or files. Supply exact interfaces and only relevant test excerpts. Avoid broad framework manuals.",
             "After two failures with the same cause, inspect raw output and replan the component or fix infrastructure before retrying. Keep failed reports; distinguish worker code, harness, and orchestrator failures.",

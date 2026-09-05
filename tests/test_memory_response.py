@@ -160,7 +160,7 @@ def test_resume_requires_an_interrupted_named_session(tmp_path):
     memory.close()
 
 
-def test_transient_stream_failure_resets_ephemeral_draft_and_retries(monkeypatch):
+def test_transient_stream_failure_continues_received_bytes(monkeypatch):
     calls = 0
     resets = []
 
@@ -168,10 +168,11 @@ def test_transient_stream_failure_resets_ephemeral_draft_and_retries(monkeypatch
         nonlocal calls
         calls += 1
         if calls == 1:
-            on_text("retry noise")
+            on_text("first ")
             raise URLError("temporary")
-        on_text("clean")
-        return _reply("clean" + COMPLETE_MARKER)
+        assert _kwargs["messages"][-2]["content"] == "first "
+        on_text("second")
+        return _reply("second" + COMPLETE_MARKER)
 
     monkeypatch.setattr("fresnel.response.time.sleep", lambda _seconds: None)
     result = generate_response(
@@ -179,8 +180,8 @@ def test_transient_stream_failure_resets_ephemeral_draft_and_retries(monkeypatch
         "question",
         profile=Profile(max_output_tokens=64, max_input_tokens=1024),
         requested_tokens=32,
-        max_continuations=0,
-        max_total_tokens=32,
+        max_continuations=1,
+        max_total_tokens=64,
         temperature=0.15,
         top_p=0.9,
         top_k=40,
@@ -191,8 +192,8 @@ def test_transient_stream_failure_resets_ephemeral_draft_and_retries(monkeypatch
         stream_fn=stream_fn,
     )
     assert calls == 2
-    assert resets == [""]
-    assert result["content"] == "clean"
+    assert resets == []
+    assert result["content"] == "first second"
 
 
 def test_stream_segments_are_durable_before_transport_finishes(tmp_path):
@@ -228,13 +229,13 @@ def test_stream_segments_are_durable_before_transport_finishes(tmp_path):
     memory.close()
 
 
-def test_no_progress_on_broken_markdown_switches_to_complete_replacement():
+def test_no_progress_on_broken_markdown_requests_suffix_not_replacement():
     conversations = []
     replies = iter(
         [
             _reply("```python\npass", "length", 32),
             _reply("\n" + COMPLETE_MARKER, "stop", 3),
-            _reply("```python\npass\n```" + COMPLETE_MARKER, "stop", 8),
+            _reply("```" + COMPLETE_MARKER, "stop", 8),
         ]
     )
 
@@ -258,7 +259,7 @@ def test_no_progress_on_broken_markdown_switches_to_complete_replacement():
         complete_fn=complete_fn,
     )
     assert result["content"] == "```python\npass\n```"
-    assert "complete corrected replacement" in conversations[-1][-1]["content"]
+    assert "Continue exactly" in conversations[-1][-1]["content"]
 
 
 def test_model_restarting_from_the_beginning_replaces_instead_of_duplicates():
@@ -271,3 +272,64 @@ def test_model_restarting_from_the_beginning_replaces_instead_of_duplicates():
         ],
     )
     assert result["content"] == restarted
+
+
+def test_stream_repeated_prefix_is_not_replayed_to_display():
+    prefix = "A sufficiently long beginning of an answer"
+    replies = iter([_reply(prefix, "length", 32), _reply(prefix + " finished" + COMPLETE_MARKER)])
+    visible = []
+    resets = []
+
+    def stream_fn(_endpoint, _question, on_text, **_kwargs):
+        reply = next(replies)
+        for char in reply["content"]:
+            on_text(char)
+        return reply
+
+    result = generate_response(
+        "http://local",
+        "answer",
+        profile=Profile(),
+        requested_tokens=32,
+        max_continuations=1,
+        max_total_tokens=64,
+        temperature=0.15,
+        top_p=0.9,
+        top_k=40,
+        min_p=0,
+        system="system",
+        streaming=True,
+        stream_fn=stream_fn,
+        on_text=visible.append,
+        on_segment_reset=resets.append,
+    )
+    assert "".join(visible) == prefix + " finished"
+    assert result["complete"]
+    assert resets == []
+
+
+def test_conflicting_restart_does_not_destroy_accepted_draft():
+    prefix = "A sufficiently long beginning of an answer: "
+    result = _generate(
+        "answer",
+        [
+            _reply(prefix + "original", "length", 32),
+            _reply(prefix + "changed" + COMPLETE_MARKER),
+        ],
+        max_continuations=1,
+    )
+    assert result["content"] == prefix + "original"
+    assert not result["complete"]
+
+
+def test_continuation_total_budget_is_enforced():
+    result = _generate("answer", [_reply("partial", "length", 32)], max_total_tokens=32)
+    assert not result["complete"]
+    assert result["finish_reason"] == "total_limit"
+    assert len(result["calls"]) == 1
+
+
+def test_language_tag_is_not_a_closing_fence():
+    assert markdown_incomplete("```python\npass\n```python\npass")
+    assert not markdown_incomplete("~~~python\npass\n~~~")
+    assert not markdown_incomplete("````python\n```\n````")

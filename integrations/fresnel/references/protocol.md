@@ -1,6 +1,6 @@
 # Protocol 1.1
 
-This reference ships with Fresnel contract 0.5.0. Protocol 1.0 plans remain valid.
+This reference ships with Fresnel contract 0.5.1. Protocol 1.0 plans remain valid.
 
 A plan is JSON with an immutable task charter: `protocol_version`, `objective`, `interfaces`, `invariants`, `contracts`, ordered `components`, `integration_validation`, and `review_checklist`.
 

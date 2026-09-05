@@ -16,6 +16,19 @@ def test_generic_and_cursor_integrations(tmp_path):
     store.close()
 
 
+def test_all_adapters_receive_resolved_ir_contract(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    store = Store(tmp_path / "state.sqlite3")
+    for product in ("codex", "cursor", "opencode", "generic"):
+        integrations.install(product, tmp_path, store=store)
+    assert "program IR" in (tmp_path / "FRESNEL.md").read_text()
+    assert "program IR" in (tmp_path / ".cursor/rules/fresnel.mdc").read_text()
+    for root in (tmp_path / ".codex/skills/fresnel", tmp_path / ".opencode/skills/fresnel"):
+        assert "program IR" in (root / "SKILL.md").read_text()
+        assert (root / "references/resolved-ir.md").is_file()
+    store.close()
+
+
 def test_codex_skill_source_and_dry_run(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     result = integrations.install("codex", dry_run=True)
@@ -69,7 +82,7 @@ def test_opencode_uses_skill_path_and_backs_up_legacy_agent(tmp_path):
 
 def test_contract_is_versioned_and_exposed_over_mcp():
     contract = integrations.contract_data()
-    assert contract["contract_version"] == "0.5.0"
+    assert contract["contract_version"] == "0.5.1"
     assert "fresnel_contract" in {tool["name"] for tool in mcp_server.definitions()}
     assert mcp_server.command("fresnel_contract", {}) == [
         "fresnel",

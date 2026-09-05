@@ -34,7 +34,7 @@ RUNTIME_ROOT="$HOME/Library/Application Support/Fresnel/cli"
 mkdir -p "$RUNTIME_ROOT" "$HOME/.local/bin"
 "$PYTHON_BIN" -m venv "$RUNTIME_ROOT"
 "$RUNTIME_ROOT/bin/python" -m pip install --disable-pip-version-check --no-compile \
-  --force-reinstall ./fresnel_agent-0.5.0-py3-none-any.whl
+  --force-reinstall ./fresnel_agent-0.5.1-py3-none-any.whl
 ln -sf "$RUNTIME_ROOT/bin/fresnel" "$HOME/.local/bin/fresnel"
 install -m 0755 ./fresnel-ui ./fresnel-supervisor "$HOME/.local/bin/"
 
