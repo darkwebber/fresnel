@@ -5,6 +5,9 @@ as Codex, Cursor, or OpenCode delegate bounded coding components to a local
 Spark 2.5 MLX worker. It owns contracts, references, approvals, durable
 workspaces, validation, assembly, recovery, and cost/quality metrics.
 
+Contributions are welcome: start with [CONTRIBUTORS.md](CONTRIBUTORS.md) for
+model-free development, architecture, testing, and scoped starter issues.
+
 ## Homebrew install
 
 ```bash
