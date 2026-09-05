@@ -156,7 +156,7 @@ def execute_tool(command_line: list[str], progress_token: Any = None) -> tuple[s
 
 def serve() -> None:
     print(
-        "Fresnel MCP ready · waiting for orchestrator requests",
+        "Fresnel MCP ready \u00b7 waiting for orchestrator requests over stdio \u00b7 looks idle? see docs/workflows.md",
         file=sys.stderr,
         flush=True,
     )
