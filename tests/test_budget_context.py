@@ -5,6 +5,8 @@ from fresnel.config import Profile
 from fresnel.protocol import parse_plan
 from fresnel.references import file_excerpt_reference
 from fresnel.worker import render_prompt
+from fresnel.context import ContextItem, compile_context
+from fresnel.store import Store
 
 
 def _component():
@@ -78,3 +80,87 @@ def test_file_excerpt_is_bounded_to_declared_context(tmp_path):
             {"path": "large.py", "start_line": 1, "end_line": 401},
             {"large.py"},
         )
+
+
+def _store(tmp_path):
+    return Store(tmp_path / "state.sqlite3")
+
+
+def test_compile_context_with_no_evidence_returns_empty_manifest(tmp_path):
+    store = _store(tmp_path)
+    rendered, manifest = compile_context(
+    store, "run-1", "bounded", 1, 64, [], []
+    )
+    assert rendered == ""
+    assert manifest["used_tokens"] == 0
+    assert manifest["items"] == []
+
+
+def test_compile_context_includes_optional_evidence_that_exactly_fits(tmp_path):
+    store = _store(tmp_path)
+    objective = ContextItem(kind="objective", content="x" * 8, reason="mandatory", source="plan")
+    fitting = ContextItem(kind="file_excerpt", content="y" * 8, reason="context", source="a.py")
+    budget = objective.tokens + fitting.tokens
+    rendered, manifest = compile_context(
+    store, "run-1", "bounded", 1, budget, [objective], [fitting]
+    )
+    assert manifest["used_tokens"] == budget
+    assert all(item["included"] for item in manifest["items"])
+    included_sources = {item["source"] for item in manifest["items"]}
+    assert included_sources == {"plan", "a.py"}
+    assert "a.py" in rendered
+
+
+def test_compile_context_omits_single_oversized_optional_card(tmp_path):
+    store = _store(tmp_path)
+    objective = ContextItem(kind="objective", content="x" * 8, reason="mandatory", source="plan")
+    oversized = ContextItem(
+    kind="file_excerpt", content="z" * 400, reason="context", source="huge.py"
+    )
+    budget = objective.tokens + 1
+    rendered, manifest = compile_context(
+    store, "run-1", "bounded", 1, budget, [objective], [oversized]
+    )
+    omitted = [item for item in manifest["items"] if not item["included"]]
+    assert len(omitted) == 1
+    assert omitted[0]["source"] == "huge.py"
+    assert omitted[0]["reason"] == "budget"
+    assert "huge.py" not in rendered
+
+
+def test_compile_context_surfaces_insufficient_mandatory_budget(tmp_path):
+    store = _store(tmp_path)
+    objective = ContextItem(kind="objective", content="x" * 400, reason="mandatory", source="plan")
+    with pytest.raises(ValueError, match="exceeds the input token budget"):
+        compile_context(store, "run-1", "bounded", 1, 1, [objective], [])
+
+
+
+def test_compile_context_rejects_stale_required_context(tmp_path):
+    store = _store(tmp_path)
+    stale = ContextItem(kind="invariant", content="must hold", reason="mandatory", source="plan", fresh=False)
+    with pytest.raises(ValueError, match="required context is stale"):
+        compile_context(store, "run-1", "bounded", 1, 64, [stale], [])
+
+
+def test_compile_context_reduced_memory_profile_forces_more_omissions(tmp_path):
+    store = _store(tmp_path)
+    profile = Profile()
+    normal_budget = allocate(profile, estimated_input_tokens=0, memory_free_percent=50).max_input_tokens
+    critical_budget = allocate(profile, estimated_input_tokens=0, memory_free_percent=10).max_input_tokens
+    assert critical_budget < normal_budget
+    objective = ContextItem(kind="objective", content="x" * 8, reason="mandatory", source="plan")
+    optional_items = [
+    ContextItem(kind="file_excerpt", content="y" * 4000, reason="context", source=f"f{i}.py")
+    for i in range(15)
+    ]
+    _, normal_manifest = compile_context(
+    store, "run-1", "bounded", 1, normal_budget, [objective], optional_items
+    )
+    _, critical_manifest = compile_context(
+    store, "run-2", "bounded", 1, critical_budget, [objective], optional_items
+    )
+    assert all(item["included"] for item in normal_manifest["items"])
+    critical_omitted = [item for item in critical_manifest["items"] if not item["included"]]
+    assert critical_omitted
+    assert all(item["reason"] == "budget" for item in critical_omitted)
