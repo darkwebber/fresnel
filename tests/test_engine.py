@@ -68,6 +68,49 @@ def test_engine_validates_without_applying(tmp_path, monkeypatch):
     store.close()
 
 
+def test_repeated_capability_reuses_evidence_and_bounds_repairs(tmp_path, monkeypatch):
+    calls = []
+    resolutions = []
+
+    def worker(*_args, **_kwargs):
+        calls.append(1)
+        payload = {"capability": "discover", "intent": f"inspect context {len(calls)}"}
+        return f'<<<NEEDS_CAPABILITY>>>{json.dumps(payload)}<<<END>>>', {}
+
+    def resolve(_self, payload):
+        resolutions.append(payload)
+        return {"id": "evidence", "source_hash": "abc", "capability": "discover",
+                "source": "local", "content": "Use supplied contract."}
+
+    monkeypatch.setattr("fresnel.engine.call_worker", worker)
+    monkeypatch.setattr("fresnel.engine.CapabilityBroker.resolve", resolve)
+    store = Store(tmp_path / "state.db")
+    result = run(tmp_path, plan(), Config(), store=store)
+    store.close()
+    assert not result["success"]
+    assert len(resolutions) == 1
+    assert len(calls) == 4  # one reference plus the configured three repair attempts
+    attempts = result["components"][0]["attempts"]
+    assert sum("repeated capability" in a.get("error", "") for a in attempts) == 3
+
+
+def test_denied_actions_consume_repair_budget(tmp_path, monkeypatch):
+    calls = []
+
+    def worker(*_args, **_kwargs):
+        calls.append(1)
+        return '<<<REQUEST_ACTION>>>{"kind":"secret","path":".env"}<<<END>>>', {}
+
+    monkeypatch.setattr("fresnel.engine.call_worker", worker)
+    monkeypatch.setattr("fresnel.engine.decide", lambda *_a, **_kw: {
+        "decision": "deny", "reason": "secret access denied"})
+    store = Store(tmp_path / "state.db")
+    result = run(tmp_path, plan(), Config(), store=store)
+    store.close()
+    assert not result["success"]
+    assert len(calls) == 3
+
+
 def test_engine_applies_after_quality_gates(tmp_path, monkeypatch):
     monkeypatch.setattr("fresnel.engine.call_worker", fake_worker)
     store = Store(tmp_path / "state.db")

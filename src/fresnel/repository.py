@@ -12,6 +12,14 @@ from typing import Any
 from .store import Store
 
 EXTENSIONS = {
+    ".c": "c",
+    ".h": "c",
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".ex": "elixir",
+    ".exs": "elixir",
+    ".heex": "heex",
+    ".css": "css",
     ".py": "python",
     ".pyi": "python",
     ".scala": "scala",

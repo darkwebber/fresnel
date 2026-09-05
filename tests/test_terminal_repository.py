@@ -72,3 +72,17 @@ def test_repository_index_is_incremental_and_returns_sparse_evidence(tmp_path):
     assert "job.py" in evidence
     assert "hash=" in evidence
     store.close()
+
+
+def test_c_and_phoenix_sources_are_retrievable(tmp_path):
+    (tmp_path / "step.c").write_text("void game_step(void) { /* snake movement */ }\n")
+    (tmp_path / "snake.h").write_text("void game_step(void);\n")
+    (tmp_path / "sand.mjs").write_text("export function falling_sand() {}\n")
+    (tmp_path / "sand_live.ex").write_text("defmodule SandLive do\nend\n")
+    store = Store(tmp_path / "state.sqlite3")
+    index = RepositoryIndex(store, "project", tmp_path)
+    assert index.index()["files"] == 4
+    assert "step.c" in index.evidence("snake movement")
+    assert "sand.mjs" in index.evidence("falling_sand")
+    assert "sand_live.ex" in index.evidence("SandLive")
+    store.close()

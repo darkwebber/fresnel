@@ -572,6 +572,7 @@ def run(
                 feedback = ""
                 number = 1
                 capability_count = 0
+                answered_requests: set[str] = set()
                 edit_limit = min(profile.max_attempts, component.budgets.max_edit_attempts)
                 capability_limit = min(
                     profile.max_capability_calls, component.budgets.max_capability_calls
@@ -814,6 +815,20 @@ def run(
                     if kind in {"capability", "reference", "action"}:
                         if kind == "reference":
                             payload["capability"] = payload.get("kind")
+                        request_key = json.dumps(
+                            {key: value for key, value in payload.items() if key != "intent"},
+                            sort_keys=True,
+                        )
+                        if request_key in answered_requests:
+                            attempt["error"] = "repeated capability request without an intervening edit"
+                            component_result["attempts"].append(attempt)
+                            feedback = (
+                                "This exact request was already answered in VERIFIED REFERENCES. "
+                                "Use that evidence to produce an edit; request a different specific "
+                                "missing fact only if necessary. Repeated requests consume repair attempts."
+                            )
+                            number += 1
+                            continue
                         approval = decide(
                             component.id,
                             payload,
@@ -844,9 +859,11 @@ def run(
                             feedback = (
                                 f"Action denied: {approval['reason']}. Use an in-scope alternative."
                             )
+                            number += 1
                             continue
                         if kind == "action" and "capability" not in payload:
                             feedback = "Action approved by policy; use only the existing bounded operations."
+                            number += 1
                             continue
                         if capability_count >= capability_limit:
                             feedback = "Capability budget exhausted; finish from verified evidence or report a blocker."
@@ -860,6 +877,7 @@ def run(
                             run_id=run_id,
                         )
                         capability = broker.resolve(payload)
+                        answered_requests.add(request_key)
                         memory.event(
                             "CAPABILITY_COMPLETED",
                             {
@@ -886,6 +904,7 @@ def run(
                         )
                         continue
                     try:
+                        answered_requests.clear()
                         operation_key = idempotency_key(
                             run_id,
                             "edit",

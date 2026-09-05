@@ -177,7 +177,10 @@ def serve() -> None:
                     }
                 else:
                     run_id = str(request["run_id"])
-                    if not worker or worker.poll() is not None:
+                    reused = True
+                    load_seconds = 0.0
+                    if (not worker or worker.poll() is not None) and not _healthy(config):
+                        reused = False
                         logs_dir().mkdir(parents=True, exist_ok=True)
                         log = (logs_dir() / "worker.log").open("a")
                         worker = subprocess.Popen(
@@ -192,15 +195,17 @@ def serve() -> None:
                             if worker.poll() is not None:
                                 break
                             time.sleep(0.25)
+                        load_seconds = round(time.monotonic() - load_started, 3)
                     if _healthy(config):
                         leases.add(run_id)
                         response = {
                             "ok": True,
                             "state": "ready",
-                            "reused": bool(load_started and time.monotonic() - load_started > 1),
-                            "load_seconds": round(time.monotonic() - load_started, 3)
-                            if load_started
-                            else 0,
+                            "reused": reused,
+                            "external_worker": worker is None,
+                            "load_seconds": load_seconds,
+                            "resident_seconds": round(time.monotonic() - load_started, 3)
+                            if load_started else 0,
                             "leases": len(leases),
                         }
                     else:

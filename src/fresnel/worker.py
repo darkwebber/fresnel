@@ -87,6 +87,20 @@ def render_prompt(
     available_file_characters = max(1000, input_characters - fixed_estimate)
     per_file_limit = max(300, available_file_characters // max(1, len(paths)))
     blocks = []
+    missing_targets = [value for value in component.targets if not safe_path(root, value).exists()]
+    examples = []
+    if missing_targets:
+        examples.append(
+            f'Missing target: return exactly this wrapper using the actual target path:\n'
+            f'<<<CREATE path="{missing_targets[0]}">>>\ncomplete file content\n<<<END>>>'
+        )
+    existing_targets = [value for value in component.targets if value not in missing_targets]
+    if existing_targets:
+        examples.append(
+            f'Existing target: use an exact replacement:\n'
+            f'<<<EDIT path="{existing_targets[0]}">>><<<SEARCH>>>\nunique exact text\n'
+            '<<<REPLACE>>>\nreplacement\n<<<END>>>'
+        )
     for relative in paths:
         path = safe_path(root, relative)
         if path.is_file():
@@ -103,8 +117,10 @@ def render_prompt(
             f'FILE "{relative}" ({description})\n<<<CONTENT>>>\n{content}\n<<<END_CONTENT>>>'
         )
     return f"""You are Spark, a bounded execution worker. Execute this component; do not redesign it.
-Inspect supplied evidence before editing. Modify declared targets only. Validate observable behavior.
-If a fact or safe execution ability is missing, request it with NEEDS_CAPABILITY. Never access secrets,
+Inspect supplied evidence before editing. Modify declared targets only. The harness runs declared
+validation after your edit. Do not request tests for a file you have not created yet.
+If a specific fact or safe execution ability is missing, request it with NEEDS_CAPABILITY.
+Reuse supplied evidence; do not repeat an answered request. Never access secrets,
 undeclared paths, or external systems directly. Return structured operations or one blocker request only.
 
 ATTEMPT: {attempt}
@@ -122,17 +138,8 @@ VERIFIED REFERENCES:\n{references or "[none]"}
 VALIDATION FEEDBACK:\n{feedback or "[first attempt]"}
 FILES:\n{chr(10).join(blocks)}
 
-Return only exact operations. Existing files use SEARCH/REPLACE:
-<<<EDIT path="relative.py">>><<<SEARCH>>>
-unique exact text
-<<<REPLACE>>>
-replacement
-<<<END>>>
-
-Missing target files use:
-<<<CREATE path="relative.py">>>
-complete content
-<<<END>>>
+Return only exact operations. Do not copy context files into the target or invent dependency files.
+{chr(10).join(examples)}
 
 If information or execution is missing, request it by intent without guessing which tool exists:
 <<<NEEDS_CAPABILITY>>>{{"capability":"discover","intent":"what must be learned or checked"}}<<<END>>>

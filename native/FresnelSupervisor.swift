@@ -141,6 +141,7 @@ do {
     var leases = Set<String>()
     var lastRelease = Date()
     var loadedAt: Date?
+    var loadDuration: TimeInterval = 0
     var lastSample = Date.distantPast
     var sampledBattery = false
     var sampledFree: Int? = nil
@@ -221,7 +222,7 @@ do {
                 ]
             } else if let runID = request.run_id {
                 var reused = true
-                if worker == nil || !(worker?.isRunning ?? false) {
+                if (worker == nil || !(worker?.isRunning ?? false)) && !healthy(config) {
                     reused = false
                     let process = Process()
                     let command = constrainedCommand(config.command, eco: thermal == .serious)
@@ -248,6 +249,7 @@ do {
                     ])
                     let deadline = Date().addingTimeInterval(180)
                     while Date() < deadline && process.isRunning && !healthy(config) { usleep(250_000) }
+                    loadDuration = loadedAt.map { Date().timeIntervalSince($0) } ?? 0
                 }
                 if healthy(config) {
                     leases.insert(runID)
@@ -257,7 +259,9 @@ do {
                     ])
                     result = [
                         "ok": true, "state": "ready", "reused": reused,
-                        "load_seconds": loadedAt.map { Date().timeIntervalSince($0) } ?? 0,
+                        "external_worker": worker == nil,
+                        "load_seconds": reused ? 0 : loadDuration,
+                        "resident_seconds": loadedAt.map { Date().timeIntervalSince($0) } ?? 0,
                         "leases": leases.count,
                         "effective_profile": thermal == .serious ? "eco" : "configured",
                         "power_source": battery ? "battery" : "ac",

@@ -20,6 +20,8 @@ Spark is a bounded implementation worker, never the architect or final reviewer.
 8. Perform the final semantic review yourself. Spark output is untrusted until protocol, component, integration, and human-quality checks pass.
 9. Relay Fresnel progress to the user: current phase, component/attempt, completed/total, ETA, retries, and validation state. MCP emits these as progress notifications; CLI orchestration should use `--progress json`. Never leave a long-running delegation looking idle.
 
+For greenfield applications or repeated worker failures, read [delegation.md](references/delegation.md). It records tested component-sizing, validation, and retry practices from the Phoenix sand simulation and C terminal game evaluations.
+
 ```bash
 fresnel doctor
 fresnel plan --repo /absolute/repo --request "..." --output /tmp/plan.json
@@ -27,7 +29,7 @@ fresnel run --repo /absolute/repo --plan /tmp/plan.json --output /tmp/report.jso
 fresnel status --run RUN_ID --follow
 fresnel run --resume RUN_ID
 fresnel review /tmp/report.json
-fresnel run --repo /absolute/repo --plan /tmp/plan.json --apply
+fresnel run --resume RUN_ID --apply
 fresnel memory inspect --run RUN_ID
 fresnel contract --format json
 ```
