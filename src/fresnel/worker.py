@@ -45,6 +45,11 @@ class WorkerTruncated(ValueError):
         self.usage = usage
 
 
+def estimate_prompt_tokens(prompt: str) -> int:
+    """Estimate tokens for a fully rendered worker prompt."""
+    return max(1, (len(prompt) + 3) // 4)
+
+
 def _bounded_content(content: str, character_limit: int, relative: str) -> str:
     if len(content) <= character_limit:
         return content
