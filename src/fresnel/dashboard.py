@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -52,7 +53,7 @@ def render(model: dict[str, Any]) -> None:
         )
         if completed.returncode == 0:
             return
-    color = sys.stdout.isatty()
+    color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
     cyan = "\033[36m" if color else ""
     green = "\033[32m" if color else ""
     reset = "\033[0m" if color else ""
