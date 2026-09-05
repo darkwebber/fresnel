@@ -91,6 +91,35 @@ def test_macos_validation_is_sandboxed(tmp_path, monkeypatch):
     assert command[-2:] == ["python3", "test.py"]
 
 
+def test_macos_sandbox_exempts_active_workspace_from_sensitive_parent(
+    tmp_path, monkeypatch
+):
+    workspace = (
+        tmp_path
+        / "Library"
+        / "Application Support"
+        / "Fresnel"
+        / "workspaces"
+        / "run-id"
+        / "repo"
+    )
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr("fresnel.sandbox.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("fresnel.sandbox.platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "fresnel.sandbox.Path.is_file",
+        lambda self: str(self) == "/usr/bin/sandbox-exec",
+    )
+
+    command = _sandboxed_command(workspace, ("node", "--check", "app.js"))
+    profile = command[2]
+
+    sensitive = tmp_path / "Library" / "Application Support" / "Fresnel"
+    assert f'(subpath "{sensitive}")' in profile
+    assert f'(require-not (subpath "{workspace}"))' in profile
+    assert command[-3:] == ["node", "--check", "app.js"]
+
+
 def test_operation_error_is_repaired_within_attempt_budget(tmp_path, monkeypatch):
     (tmp_path / "app.py").write_text("def add(a, b):\n    return 0\n")
     attempts = iter(

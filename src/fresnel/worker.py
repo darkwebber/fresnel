@@ -13,12 +13,13 @@ from urllib.error import HTTPError
 from .protocol import Component, safe_path
 
 EDIT_RE = re.compile(
-    r'<<<EDIT path="(?P<path>[^"\n]+)">>>\s*<<<SEARCH>>>[ \t]*\n?(?P<search>.*?)\n?'
-    r"<<<REPLACE>>>[ \t]*\n?(?P<replace>.*?)\n?<<<END>>>",
+    r'<<<EDIT path="(?P<path>[^"\n]+)">{2,3}\s*<<<SEARCH>{2,3}[ \t]*\n?'
+    r"(?P<search>.*?)\n?<<<REPLACE>{2,3}[ \t]*\n?(?P<replace>.*?)\n?<<<END>{2,3}",
     re.DOTALL,
 )
 CREATE_RE = re.compile(
-    r'<<<CREATE path="(?P<path>[^"\n]+)">>>\n(?P<content>.*?)\n<<<END>>>', re.DOTALL
+    r'<<<CREATE path="(?P<path>[^"\n]+)">{2,3}\n(?P<content>.*?)\n<<<END>>>',
+    re.DOTALL,
 )
 REFERENCE_RE = re.compile(r"<<<NEEDS_REFERENCE>>>\s*(\{.*?\})\s*<<<END>>>", re.DOTALL)
 ACTION_RE = re.compile(r"<<<REQUEST_ACTION>>>\s*(\{.*?\})\s*<<<END>>>", re.DOTALL)
@@ -28,6 +29,13 @@ LOOSE_REPLACE_RE = re.compile(
     r"(?:<<<)?REPLACE(?:>>>)?\s*\n(?P<replace>.*?)\n(?:<<<)?END(?:>>>)?(?:\s*<<<)?",
     re.DOTALL,
 )
+LOOSE_JSON_ACTION_RE = re.compile(
+    r"(?:<<<)?REQUEST_ACTION(?:>{1,3})?\s*(?P<payload>\{.*?\})\s*"
+    r"(?:<<<)?END(?:>{1,3})?",
+    re.DOTALL,
+)
+LOOSE_ACTION_SPLIT_RE = re.compile(r"(?:<<<)?REQUEST_ACTION(?:>{1,3})?")
+LOOSE_END_RE = re.compile(r"(?:<<<)?END(?:>{1,3})?\s*$")
 
 
 class WorkerTruncated(ValueError):
@@ -209,6 +217,33 @@ def parse(text: str, fallback_target: str | None = None) -> tuple[str, Any]:
     residue = CREATE_RE.sub("", EDIT_RE.sub("", text)).strip()
     if operations and not residue:
         return "operations", operations
+    loose_json_operations = []
+    action_parts = LOOSE_ACTION_SPLIT_RE.split(text)
+    valid_loose_sequence = len(action_parts) > 1 and not action_parts[0].strip()
+    for raw_payload in action_parts[1:]:
+        payload = LOOSE_END_RE.sub("", raw_payload).strip()
+        try:
+            request = json.loads(payload)
+        except json.JSONDecodeError:
+            valid_loose_sequence = False
+            break
+        if len(action_parts) == 2 and isinstance(request.get("capability"), str):
+            return "capability", request
+        action = str(request.get("action") or request.get("operation") or "").upper()
+        if action not in {"EDIT", "REPLACE", "SEARCH_REPLACE"}:
+            valid_loose_sequence = False
+            break
+        path = request.get("file") or request.get("path")
+        search = request.get("SEARCH", request.get("search"))
+        replacement = request.get("REPLACE", request.get("replace"))
+        if not all(isinstance(value, str) for value in (path, search, replacement)):
+            valid_loose_sequence = False
+            break
+        loose_json_operations.append(
+            {"kind": "edit", "path": path, "search": search, "replace": replacement}
+        )
+    if valid_loose_sequence and loose_json_operations:
+        return "operations", loose_json_operations
     if fallback_target:
         loose = LOOSE_REPLACE_RE.fullmatch(stripped)
         if loose:

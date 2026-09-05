@@ -143,6 +143,63 @@ def test_edit_markers_allow_code_immediately_after_delimiter():
     assert parse(response)[1][0]["search"] == "old"
 
 
+def test_create_marker_tolerates_one_missing_closing_angle():
+    response = '<<<CREATE path="app.js">>\nexport const value = 1\n<<<END>>>'
+    kind, operations = parse(response)
+    assert kind == "operations"
+    assert operations == [
+        {"kind": "create", "path": "app.js", "content": "export const value = 1"}
+    ]
+
+
+def test_edit_marker_tolerates_one_missing_closing_angle():
+    response = """<<<EDIT path="app.js">><<<SEARCH>>
+old
+<<<REPLACE>>
+new
+<<<END>>"""
+    kind, operations = parse(response)
+    assert kind == "operations"
+    assert operations[0]["search"] == "old"
+    assert operations[0]["replace"] == "new"
+
+
+def test_loose_json_actions_accept_bounded_search_replace_sequence():
+    response = """<<<REQUEST_ACTION>
+{"action":"SEARCH_REPLACE","path":"app.js","search":"old","replace":"new"}
+<<<END>
+<<<REQUEST_ACTION>>
+{"action":"REPLACE","path":"other.js","search":"before","replace":"after"}
+<<<END>>"""
+    kind, operations = parse(response)
+    assert kind == "operations"
+    assert operations == [
+        {"kind": "edit", "path": "app.js", "search": "old", "replace": "new"},
+        {"kind": "edit", "path": "other.js", "search": "before", "replace": "after"},
+    ]
+
+
+def test_bare_json_action_markers_and_edit_alias_are_accepted():
+    response = """REQUEST_ACTION
+{"action":"edit","path":"app.js","search":"old","replace":"new"}
+END
+REQUEST_ACTION
+{"operation":"SEARCH_REPLACE","path":"app.js","search":"other","replace":"value"}
+END"""
+    kind, operations = parse(response)
+    assert kind == "operations"
+    assert [item["search"] for item in operations] == ["old", "other"]
+
+
+def test_capability_inside_bare_request_action_is_normalized():
+    response = """REQUEST_ACTION
+{"capability":"file_excerpt","intent":"inspect","path":"app.js","start_line":1,"end_line":20}
+END"""
+    kind, payload = parse(response)
+    assert kind == "capability"
+    assert payload["path"] == "app.js"
+
+
 def test_loose_replace_marker_compatibility():
     response = "<<<REQUEST_ACTION>>>\nSEARCH\nold\nREPLACE\nnew\nEND\n<<<"
     kind, operations = parse(response, fallback_target="app.py")
