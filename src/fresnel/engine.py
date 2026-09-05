@@ -816,7 +816,10 @@ def run(
                         if kind == "reference":
                             payload["capability"] = payload.get("kind")
                         request_key = json.dumps(
-                            {key: value for key, value in payload.items() if key != "intent"},
+                            {
+                                key: value for key, value in payload.items()
+                                if not (key == "intent" and payload.get("capability") == "file_excerpt")
+                            },
                             sort_keys=True,
                         )
                         if request_key in answered_requests:

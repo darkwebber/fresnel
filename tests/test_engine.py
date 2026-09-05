@@ -74,7 +74,8 @@ def test_repeated_capability_reuses_evidence_and_bounds_repairs(tmp_path, monkey
 
     def worker(*_args, **_kwargs):
         calls.append(1)
-        payload = {"capability": "discover", "intent": f"inspect context {len(calls)}"}
+        payload = {"capability": "file_excerpt", "path": "app.py", "start_line": 1,
+                   "end_line": 20, "intent": f"inspect context {len(calls)}"}
         return f'<<<NEEDS_CAPABILITY>>>{json.dumps(payload)}<<<END>>>', {}
 
     def resolve(_self, payload):
@@ -109,6 +110,20 @@ def test_denied_actions_consume_repair_budget(tmp_path, monkeypatch):
     store.close()
     assert not result["success"]
     assert len(calls) == 3
+
+
+def test_distinct_discovery_intents_are_not_deduplicated(tmp_path, monkeypatch):
+    answers = iter([
+        ('<<<NEEDS_CAPABILITY>>>{"capability":"discover","intent":"find API"}<<<END>>>', {}),
+        ('<<<NEEDS_CAPABILITY>>>{"capability":"discover","intent":"run tests"}<<<END>>>', {}),
+        fake_worker(),
+    ])
+    monkeypatch.setattr("fresnel.engine.call_worker", lambda *_a, **_kw: next(answers))
+    store = Store(tmp_path / "state.db")
+    result = run(tmp_path, plan(), Config(), store=store)
+    store.close()
+    assert result["success"]
+    assert len(result["components"][0]["capability_calls"]) == 2
 
 
 def test_engine_applies_after_quality_gates(tmp_path, monkeypatch):
