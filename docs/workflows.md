@@ -29,6 +29,30 @@ For stdio MCP, configure the host to launch command `fresnel` with args `["mcp"]
 The host needs Fresnel in PATH. Use the host's configuration mechanism; don't overwrite
 unrelated settings. Restart MCP connections after upgrades.
 
+### MCP looks stuck? It's waiting for a host, not a chat prompt
+
+`fresnel mcp` is a stdio JSON-RPC server, not an interactive command. Started directly
+in a terminal it immediately prints a ready message to stderr, then blocks reading
+stdin for protocol requests. That block is expected, not a hang, and it looks the same
+whether a host launched it or you launched it by hand:
+
+```
+$ fresnel mcp
+Fresnel MCP ready · waiting for orchestrator requests over stdio · looks idle? see docs/workflows.md
+```
+
+Nothing else appears because there is no host sending JSON-RPC yet. Concrete next
+command: exit with Ctrl-C, then point a real host at the command instead of typing into
+it, for example `fresnel integrations install codex` (see the host list above). Once a
+host starts `fresnel mcp` as a subprocess and sends `initialize`, replies appear as one
+JSON object per line on stdout; the ready banner always stays on stderr and never mixes
+into stdout, so stdout remains valid protocol traffic a host can parse.
+
+To verify readiness without relying on host UI, or when a host suppresses progress
+notifications, don't wait on the host: run `fresnel status --run RUN_ID --follow` in a
+separate terminal, or inspect the stored run report/`fresnel memory inspect --run
+RUN_ID`, either of which works independently of what the host chooses to display.
+
 ## Reviewed implementation
 
 Ask the orchestrator to own exact interfaces, algorithms, edge cases and independent
