@@ -63,6 +63,11 @@ are invitations, not promised release dates; ask questions on the issue when blo
 | Windows vertical slice | [#7](https://github.com/darkwebber/fresnel/issues/7) | Advanced; depends on #6 |
 | Linux backend/lifecycle | [#8](https://github.com/darkwebber/fresnel/issues/8) | Advanced; depends on #6 |
 | Layer streaming/offload feasibility | [#9](https://github.com/darkwebber/fresnel/issues/9) | Performance research |
+| Sustained-decode calibration | [#14](https://github.com/darkwebber/fresnel/issues/14) | Intermediate/advanced |
+| Retrieval and compaction evaluation | [#15](https://github.com/darkwebber/fresnel/issues/15) | Intermediate |
+| Preference consent and precedence | [#16](https://github.com/darkwebber/fresnel/issues/16) | Intermediate |
+| Learning evidence verification | [#17](https://github.com/darkwebber/fresnel/issues/17) | Advanced |
+| Benchmark result schema and reports | [#18](https://github.com/darkwebber/fresnel/issues/18) | Intermediate |
 
 Useful first contributions include documenting an observed failure, adding a fake
 model regression, improving an error message, and testing an integration walkthrough.

@@ -34,7 +34,7 @@ packages = ["src/fresnel"]
 "integrations/fresnel" = "fresnel/_bundled_skill"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/fresnel", "integrations", "native", "scripts", "README.md", "LICENSE"]
+include = ["src/fresnel", "integrations", "native", "scripts", "docs", "examples", "CONTRIBUTORS.md", "CONTRIBUTING.md", "packaging/RELEASE_NOTES*.md", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

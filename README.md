@@ -1,5 +1,56 @@
 # Fresnel
 
+### Precise plans. Local implementation. Verified results.
+
+**In 30 seconds:** Fresnel helps your coding agent delegate small, well-defined
+jobs to a local model on your Mac. The orchestrator designs and reviews. Fresnel
+manages tools, context, budgets, tests and recovery. Spark writes the code.
+Use `fresnel ask` for questions; use `fresnel run` for reviewed project changes.
+
+> **Experimental:** Apple Silicon macOS 14+, at least 16 GB unified memory.
+> Production worker: Spark-X2.5-4B-MLX-8bit. Windows/Linux runtime ports and Claude
+> Code integration are open work. Broad net cost savings are not yet established.
+
+```mermaid
+flowchart LR
+    U[Your goal] --> O[Orchestrator<br/>design + resolved IR]
+    O --> F[Fresnel<br/>scope + tools + budgets]
+    F --> S[Local Spark<br/>bounded implementation]
+    S --> V[Compiler + behavioral tests]
+    V -->|Targeted repair| F
+    V -->|Passing evidence| R[Orchestrator review]
+    R --> A[Apply verified checkpoint]
+```
+
+Text equivalent: goal → precise plan → local code → tests → repair if needed →
+review → apply. A passing compiler is not a substitute for behavioral tests.
+
+## Choose your depth
+
+| I want to… | Start here |
+|---|---|
+| Install quickly | [Homebrew install](#homebrew-install) |
+| Understand the architecture and roles | [Architecture and orchestration](docs/architecture.md) |
+| Complete a first delegation | [Workflow and troubleshooting](docs/workflows.md) |
+| Understand memory, preferences and learning | [Memory and privacy](docs/memory.md) |
+| Interpret benchmarks and resource measurements | [Evaluation and calibration](docs/evaluation.md) |
+| Contribute without downloading a model | [Contributor guide](CONTRIBUTORS.md) |
+
+## Where Fresnel fits
+
+| Useful starting point | Poor starting point |
+|---|---|
+| Bounded helper with an exact interface | Vague whole-application request |
+| Mechanical edit with independent tests | Large file beyond the output budget |
+| Explicit algorithm and boundary cases | Asking Spark to invent unfamiliar APIs |
+| Reviewable diff and recorded failures | Treating generated text as verified work |
+
+The 0.5.1 two-task trial favored resolved IR (2/2 first-pass versus 0/2 direct),
+but planner cost, energy and broad generalization were not measured.
+[Methods and limitations](docs/evaluation.md) matter more than a headline score.
+
+## Overview
+
 Fresnel is a Mac-native orchestration harness that lets strong coordinators such
 as Codex, Cursor, or OpenCode delegate bounded coding components to a local
 Spark 2.5 MLX worker. It owns contracts, references, approvals, durable
@@ -40,6 +91,10 @@ original question. Use `--max-continuations 0` to disable continuation,
 `--no-stream` to buffer the answer, or `--json` for machine-readable call and
 budget metrics. Requested output is reduced automatically when context headroom
 or current Mac memory pressure makes the requested ceiling unsafe.
+
+In 0.5.1, continuation suffixes are checked before display rather than replaying a
+whole replacement. Some forced short-output continuations still fail; incomplete
+output is reported as such, not automatically copied or behaviorally validated.
 
 Fresnel keeps hardware pressure measurements at temperature 0 so repeated
 calibrations are comparable. Normal worker calls use the sampling values in the
@@ -92,6 +147,10 @@ and model artifacts, starts a temporary worker, and runs an adaptive 5–10 minu
 calibration. It saves `eco`, `balanced`, and `maximum` profiles; change one later
 with `fresnel config profile eco|balanced|maximum`. Credentials stay in macOS
 Keychain, not project files.
+
+Calibration output-reserve checks currently use short health responses, not sustained
+decode workloads. Treat profiles as starting budgets, not proven long-output capacity.
+See [measurement limitations](docs/evaluation.md).
 
 Delegate a reviewed plan without touching the real repository:
 
@@ -173,6 +232,9 @@ playbook candidates may be promoted only from shadow evidence whose regressions
 pass, new failures are zero, permission risk is unchanged, and token and latency
 increases are each at most 15%. Prior rules remain available for instant rollback;
 policy, code, sandbox, and permission changes remain manual.
+
+These gates currently evaluate submitted evidence; independent evidence generation
+and verification are open work. [Memory and learning details](docs/memory.md).
 
 The 8-bit worker currently has strengths declared for bounded Python edits,
 simple file creation, and mechanical repairs. Multi-model routing remains shadow
