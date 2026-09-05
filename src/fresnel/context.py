@@ -28,11 +28,13 @@ class ContextItem:
     @property
     def rendered_tokens(self) -> int:
         """Estimate the tokens consumed by this item in the rendered context."""
-        rendered = (
+        return (len(self.render()) + 3) // 4
+
+    def render(self) -> str:
+        return (
             f"[{self.kind.upper()} source={self.source} "
             f"hash={self.source_hash[:12]}]\n{self.content}"
         )
-        return max(1, (len(rendered) + 3) // 4)
 
     @property
     def source_hash(self) -> str:
@@ -52,13 +54,19 @@ def compile_context(
     included: list[ContextItem] = []
     omitted: list[dict[str, Any]] = []
     used = 0
+    characters = 0
+
+    def candidate_characters(item: ContextItem) -> int:
+        return characters + (2 if included else 0) + len(item.render())
+
     for item in required:
         if not item.fresh:
             raise ValueError(f"required context is stale: {item.source}")
-        if used + item.rendered_tokens > budget_tokens:
+        if (candidate_characters(item) + 3) // 4 > budget_tokens:
             raise ValueError("required component context exceeds the input token budget")
+        characters = candidate_characters(item)
         included.append(item)
-        used += item.rendered_tokens
+        used = (characters + 3) // 4
     ranked = sorted(
         (item for item in optional if item.content.strip()),
         key=lambda item: (item.fresh, item.priority / max(1, item.rendered_tokens)),
@@ -77,9 +85,10 @@ def compile_context(
                     "fresh": False,
                 }
             )
-        elif used + item.rendered_tokens <= budget_tokens:
+        elif (candidate_characters(item) + 3) // 4 <= budget_tokens:
+            characters = candidate_characters(item)
             included.append(item)
-            used += item.rendered_tokens
+            used = (characters + 3) // 4
         else:
             omitted.append(
                 {
@@ -123,7 +132,7 @@ def compile_context(
     )
     store.connection.commit()
     rendered = "\n\n".join(
-        f"[{item.kind.upper()} source={item.source} hash={item.source_hash[:12]}]\n{item.content}"
+        item.render()
         for item in included
     )
     return rendered, manifest

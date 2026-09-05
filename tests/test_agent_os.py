@@ -61,15 +61,18 @@ def test_protocol_11_is_additive_and_protocol_10_still_parses():
 
 def test_context_compiler_records_inclusions_and_budget_omissions(tmp_path):
     store = Store(tmp_path / "state.db")
+    required = ContextItem("state", "required", "current state", "state", 10)
+    small = ContextItem("small", "short", "high utility", "small", 5)
+    budget = (len(required.render() + "\n\n" + small.render()) + 3) // 4
     rendered, manifest = compile_context(
         store,
         "run",
         "component",
         1,
-        12,
-        [ContextItem("state", "required", "current state", "state", 10)],
+        budget,
+        [required],
         [
-            ContextItem("small", "short", "high utility", "small", 5),
+            small,
             ContextItem("large", "x" * 100, "too large", "large", 1),
         ],
     )
