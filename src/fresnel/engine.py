@@ -39,6 +39,7 @@ from .store import Store
 from .worker import (
     WorkerTruncated,
     apply_operations,
+    estimate_prompt_tokens,
     operations_already_applied,
     render_prompt,
 )
@@ -678,7 +679,7 @@ def run(
                         situation="",
                         playbooks="",
                     )
-                    estimated_tokens = (len(prompt) + 3) // 4
+                    estimated_tokens = estimate_prompt_tokens(prompt)
                     budget = allocate(
                         profile,
                         estimated_input_tokens=estimated_tokens,

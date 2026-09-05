@@ -26,6 +26,15 @@ class ContextItem:
         return max(1, (len(self.content) + 3) // 4)
 
     @property
+    def rendered_tokens(self) -> int:
+        """Estimate the tokens consumed by this item in the rendered context."""
+        rendered = (
+            f"[{self.kind.upper()} source={self.source} "
+            f"hash={self.source_hash[:12]}]\n{self.content}"
+        )
+        return max(1, (len(rendered) + 3) // 4)
+
+    @property
     def source_hash(self) -> str:
         return hashlib.sha256(self.content.encode()).hexdigest()
 
@@ -46,13 +55,13 @@ def compile_context(
     for item in required:
         if not item.fresh:
             raise ValueError(f"required context is stale: {item.source}")
-        if used + item.tokens > budget_tokens:
+        if used + item.rendered_tokens > budget_tokens:
             raise ValueError("required component context exceeds the input token budget")
         included.append(item)
-        used += item.tokens
+        used += item.rendered_tokens
     ranked = sorted(
         (item for item in optional if item.content.strip()),
-        key=lambda item: (item.fresh, item.priority / max(1, item.tokens)),
+        key=lambda item: (item.fresh, item.priority / max(1, item.rendered_tokens)),
         reverse=True,
     )
     for item in ranked:
@@ -62,22 +71,22 @@ def compile_context(
                     "kind": item.kind,
                     "source": item.source,
                     "reason": "stale",
-                    "tokens": item.tokens,
+                    "tokens": item.rendered_tokens,
                     "priority": item.priority,
                     "source_hash": item.source_hash,
                     "fresh": False,
                 }
             )
-        elif used + item.tokens <= budget_tokens:
+        elif used + item.rendered_tokens <= budget_tokens:
             included.append(item)
-            used += item.tokens
+            used += item.rendered_tokens
         else:
             omitted.append(
                 {
                     "kind": item.kind,
                     "source": item.source,
                     "reason": "budget",
-                    "tokens": item.tokens,
+                    "tokens": item.rendered_tokens,
                     "priority": item.priority,
                     "source_hash": item.source_hash,
                     "fresh": True,
@@ -86,7 +95,7 @@ def compile_context(
     items = [
         {
             **{key: value for key, value in asdict(item).items() if key != "content"},
-            "tokens": item.tokens,
+            "tokens": item.rendered_tokens,
             "source_hash": item.source_hash,
             "included": True,
         }

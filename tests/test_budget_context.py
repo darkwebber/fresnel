@@ -4,7 +4,8 @@ from fresnel.budget import allocate
 from fresnel.config import Profile
 from fresnel.protocol import parse_plan
 from fresnel.references import file_excerpt_reference
-from fresnel.worker import render_prompt
+from fresnel.worker import estimate_prompt_tokens, render_prompt
+from fresnel.context import ContextItem
 
 
 def _component():
@@ -78,3 +79,27 @@ def test_file_excerpt_is_bounded_to_declared_context(tmp_path):
             {"path": "large.py", "start_line": 1, "end_line": 401},
             {"large.py"},
         )
+
+
+def test_context_budget_counts_rendered_metadata(tmp_path):
+    from fresnel.store import Store
+    store = Store(tmp_path / "state.db")
+    item = ContextItem("required", "x" * 40, "required", "source")
+    # The raw content fits, but its rendered header must also fit.
+    with pytest.raises(ValueError, match="required component context exceeds"):
+        from fresnel.context import compile_context
+
+        compile_context(
+            store,
+            "run",
+            "component",
+            1,
+            item.tokens,
+            [item],
+            [],
+        )
+
+
+def test_final_prompt_estimate_counts_all_rendered_sections():
+    prompt = "goal\n\nconstraints\n\nfiles"
+    assert estimate_prompt_tokens(prompt) == max(1, (len(prompt) + 3) // 4)
